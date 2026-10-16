@@ -1,0 +1,26 @@
+# Environment & secrets (keep .env.example)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Common build / dependency output (trim once the stack is chosen)
+node_modules/
+dist/
+build/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / AI tools
+.vscode/settings.json
+.idea/
+.claude/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+*.log

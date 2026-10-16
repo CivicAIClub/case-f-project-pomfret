@@ -1,0 +1,23 @@
+---
+description: "Project context for Case F: Project: Pomfret Sorting (client, status, and what the first meeting must settle)"
+alwaysApply: true
+---
+
+# Case F: Project: Pomfret Sorting
+
+## Client
+- **Mr. Litowitz**, Project: Pomfret, Pomfret School.
+
+## Team
+- Developers: **not yet assigned**. Club lead: Cayden Auyang. Update this line and `.github/CODEOWNERS` when developers are assigned.
+
+## Status
+- First meeting being scheduled. No code yet. How students choose, each project's limits and when final groups are due are **open**; do not invent them. When helping here, ask what Mr. Litowitz said in the first meeting, then record the answers in `README.md` and in this rule.
+
+## Likely direction (not a commitment)
+- Students rank their choices, and a tool places everyone within each project's size and rules. Mr. Litowitz makes the final call.
+
+## Guidance for the first build
+- Prefer Google Workspace (Forms, Sheets, Apps Script) over new infrastructure.
+- Never commit real student names, choices or rosters. Build and test with made-up students only, and say so in the README.
+- Add a `.env.example` the moment any credential or ID is needed.
