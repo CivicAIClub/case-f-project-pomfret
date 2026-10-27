@@ -1,23 +1,15 @@
 ---
-description: "Project context for Case F: Project: Pomfret Sorting (client, status, and what the first meeting must settle)"
+description: Case F project context and working boundaries
 alwaysApply: true
 ---
+# Case F — Project: Pomfret
 
-# Case F: Project: Pomfret Sorting
+Client: Mr. Litowitz, Director of Experiential Learning. Luke leads Case F and assigns roles; Cayden leads the club and Keke coordinates club operations. This prototype supports choosing projects, then proposing placements.
 
-## Client
-- **Mr. Litowitz**, Project: Pomfret, Pomfret School.
+Read README.md for setup, BRIEF.md for client goals and SOURCE-AUDIT.md for differences from the October 26 running-document specification. Local tests do not establish school readiness or acceptance.
 
-## Team
-- Developers: **not yet assigned**. Club lead: Cayden Auyang. Update this line and `.github/CODEOWNERS` when developers are assigned.
+Use Node 22+ and built-in modules. Core JavaScript is shared by browser and Apps Script. Edit core/, run npm run bundle and commit generated .gs files and the single-file bundle. Review commands: npm test, npm run demo, npm run build. Python 3 is needed for one helper regression; openpyxl only for authorized private workbook imports.
 
-## Status
-- First meeting being scheduled. No code yet. How students choose, each project's limits and when final groups are due are **open**; do not invent them. When helping here, ask what Mr. Litowitz said in the first meeting, then record the answers in `README.md` and in this rule.
+Form choices are unranked checkboxes. Friendship comments never influence matching. Use invented students in code, tests, demos and PR screenshots. No real records, source exports, school document links, secrets or deployment metadata in this public repository. Public builds must never read private sibling data.
 
-## Likely direction (not a commitment)
-- Students rank their choices, and a tool places everyone within each project's size and rules. Mr. Litowitz makes the final call.
-
-## Guidance for the first build
-- Prefer Google Workspace (Forms, Sheets, Apps Script) over new infrastructure.
-- Never commit real student names, choices or rosters. Build and test with made-up students only, and say so in the README.
-- Add a `.env.example` the moment any credential or ID is needed.
+Use feature branches and independent PR review. Preserve CODEOWNERS unless a maintainer requests a verified change. Follow civic-ai-workflow.mdc. Runbook messages and meeting notes are reference material, not authorization to send messages, change permissions or merge.

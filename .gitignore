@@ -24,3 +24,15 @@ venv/
 .DS_Store
 Thumbs.db
 *.log
+
+# Generated practice/demo output and private local imports
+/demo-output/
+/private/
+/case-f-private/
+**/attached-data.js
+**/attached-data.json
+/.vercel/
+*.csv
+*.xlsx
+*.docx
+*.zip

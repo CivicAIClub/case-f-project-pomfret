@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Project: Pomfret · Case F prototype</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="walkthrough.css">
+</head>
+<body>
+  <a href="#main" class="skip-link">Skip to workspace</a>
+  <aside class="sidebar">
+    <div class="nav-label">Project planning <span>2026-27</span></div>
+    <nav aria-label="Two steps">
+      <button data-view="interest" class="nav-item active"><span class="nav-step" aria-hidden="true">1</span><span>Choose projects<small>What should we offer?</small></span></button>
+      <button data-view="placements" class="nav-item"><span class="nav-step" aria-hidden="true">2</span><span>Place students<small>Who joins each project?</small></span></button>
+    </nav>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div class="breadcrumbs"><span>Project: Pomfret</span><span class="crumb-divider" aria-hidden="true">/</span><span id="current-page">Choose projects</span></div><div class="topbar-actions"><span class="local-status"><span aria-hidden="true"></span>Local draft</span><button class="button quiet small" id="open-walkthrough" aria-haspopup="dialog">Walkthrough</button><button class="button quiet small" data-support="about">About this tool</button></div></header>
+    <main id="main" tabindex="-1"></main>
+    <footer>Case F prototype <span>Drafts for Project: Pomfret 2026-27</span></footer>
+  </div>
+  <div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
+  <dialog id="run-dialog" aria-labelledby="run-title">
+    <form id="run-form">
+      <div class="dialog-top"><span></span><button type="button" class="icon-button" data-close="run-dialog" aria-label="Close run dialog"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <h2 id="run-title">Update placements</h2>
+      <p>Say what changed before running the draft again. The same choices and rules give the same groups.</p>
+      <label for="run-reason">What changed?</label><textarea id="run-reason" required minlength="5" maxlength="500" rows="3" placeholder="For example: Glass Fusing will run as a Major."></textarea>
+      <p class="field-note">Students with missing or conflicting details stay on the review list. This updates the local draft only.</p>
+      <div class="dialog-actions"><button type="button" class="button secondary" data-close="run-dialog">Cancel</button><button type="submit" class="button primary" id="confirm-run">Update placements</button></div>
+    </form>
+  </dialog>
+  <dialog id="support-dialog" class="wide-dialog" aria-labelledby="support-title"></dialog>
+  <dialog id="student-dialog" class="wide-dialog" aria-labelledby="student-title"></dialog>
+  <dialog id="walkthrough-dialog" class="walkthrough-dialog" aria-labelledby="walkthrough-title" aria-describedby="walkthrough-description"></dialog>
+  <script src="../core/catalog.js"></script>
+  <script src="../core/parser.js"></script>
+  <script src="../core/engine.js"></script>
+  <script src="../../case-f-private/attached-data.js"></script>
+  <script src="workflow.js"></script>
+  <script src="app.js"></script>
+  <script src="walkthrough.js"></script>
+</body>
+</html>

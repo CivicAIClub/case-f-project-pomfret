@@ -1,59 +1,90 @@
-# Case F: Project: Pomfret Sorting
+# Project: Pomfret — Case F
 
-## What this is
+A prototype for two decisions Mr. Litowitz needs to make: **which projects should run**, then **where each student should go**. It counts interest, suggests Majors and Minors, proposes placements, and keeps the reasons and problems visible for review.
 
-Mr. Litowitz (Project: Pomfret, Pomfret School) is the client for this case. He needs students sorted into their Project: Pomfret groups, which he calls a one-time, complex project. The first meeting is being scheduled, so there is no code yet. Status: first meeting being scheduled.
+This is a working prototype, not an approved school roster. The browser demo and repository use invented students. Some rules in the October 26 running document remain unfinished; see [SOURCE-AUDIT.md](SOURCE-AUDIT.md).
 
-| | |
-|---|---|
-| **Client** | Mr. Litowitz, Project: Pomfret, Pomfret School |
-| **Developers** | _Not yet assigned_ |
-| **Club lead** | Cayden Auyang |
-| **Status** | 🔵 First meeting being scheduled |
+## Setup from a fresh clone
 
-## The problem
+Requirements: Node.js 22 or newer, Git, and Python 3 for one importer regression test. No npm dependencies, environment variables, API keys or account credentials are needed. Python's `openpyxl` is only needed for optional private workbook imports.
 
-Mr. Litowitz needs students sorted into their Project: Pomfret groups. He calls it a one-time, complex project.
-
-How students choose, what limits each project has, and when final groups are due: _To be written in the first meeting._
-
-## Goal
-
-_To be written in the first meeting._ Likely direction (not a commitment): students rank their choices, and a tool places everyone within each project's size and rules, with Mr. Litowitz making the final call.
-
-## Stack
-
-_Not decided._ Prefer Google Workspace (Forms, Sheets, Apps Script). Decide in the first meeting and record the decision here and in `.cursor/rules/case-f-project-pomfret.mdc`.
-
-## Student data
-
-This repository is public. Never commit real student names, choices or rosters. Build and test with made-up students only.
-
-## Repository layout
-
-```
-case-f-project-pomfret/
-├── README.md              ← this file; keep it the source of truth for setup
-├── .cursor/rules/         ← committed Cursor rules (workflow + project context)
-├── .github/               ← pull request template, CODEOWNERS
-└── .gitignore
+```sh
+git clone https://github.com/CivicAIClub/case-f-project-pomfret.git
+cd case-f-project-pomfret
+# While this build is under review:
+git switch feature/project-pomfret-sorter
+npm test
+npm run demo
+npm run build:demo
+npm run preview
 ```
 
-Add code at the repo root (no `projects/` folder). When you add a real setup, write a "Setup from a fresh clone" section here: install, env vars (with a `.env.example`), run, build.
+Open `http://127.0.0.1:3000`. Stop the server with Ctrl+C. Set `PORT` if needed. Tests use `python3` on PATH; `PYTHON` can select another Python 3 executable. No install step is needed for these commands.
 
-## Working on this repo
+| Command | Purpose |
+| --- | --- |
+| `npm test` | Parser, sorter, Sheets adapter, browser helpers, importer boundaries, public build and committed-bundle checks. |
+| `npm run demo` | Generate 240 practice students in a simulated spreadsheet; prepare, count, sort and check using the committed Apps Script bundle. Print the summary and first 20 findings, and export every PP table as CSV to `demo-output/`. |
+| `npm run bundle` | Rebuild the generated `.gs` modules and `paste-into-apps-script/ProjectPomfret.gs`. Commit generated changes with their sources. |
+| `npm run build:demo` | Build the browser demo in `dist/` from invented records. Never reads the private import folder. |
+| `npm run preview` | Serve only the generated demo assets on localhost. |
+| `npm run build` | Build both the Apps Script bundle and browser demo. |
 
-- Branch from `main` as `feature/<short-description>`, `fix/<short-description>`, or `chore/<short-description>` (lowercase, hyphens).
-- Every change goes through a pull request with at least one approval. `main` cannot be pushed to directly.
-- Never commit secrets. Put real values in a gitignored `.env`; list variable names with placeholders in `.env.example`.
-- Cursor rules for this project are committed in `.cursor/rules/`. You do not need to paste anything into your IDE settings.
-- The full Git walkthrough for beginners is the club's **[Developer Onboarding Guide](https://github.com/CivicAIClub/docs/blob/main/developer-onboarding.md)**.
+`demo-output/` and `dist/` are ignored by Git.
 
-## Definition of done (Phase 1)
+## Browser walkthrough
 
-_To be written in the first meeting._
+A five-step introduction appears on each fresh page load and can be reopened from **Walkthrough**:
 
-## Contributors
+1. Read project interest by grade and the suggested Major/Minor choices.
+2. Change a project's decision or open the rules when needed.
+3. Create draft placements. Explain what changed when you rerun them.
+4. Review students, project rosters and grouped warnings.
+5. Export the proposal for review.
 
-- **Cayden Auyang:** club lead; set up this repository
-- Developers: not yet assigned
+The app has two main screens: choose projects, then place students. Changes to rules or project decisions mark old results as out of date. Reloading resets the demo. Comments are available for a person to read; friendship requests do not influence the sorter.
+
+`preview/demo-data.js` generates 253 invented browser records: 240 eligible or late students, 11 excluded records and two identity-review examples. The Sheets practice generator creates 240 students. These are separate fixtures for different review cases.
+
+## Google Sheets practice trial
+
+Use an **empty scratch spreadsheet** with practice data first. This trial has not yet been verified in a school account.
+
+1. Run `npm run bundle`.
+2. In the spreadsheet's bound Apps Script project, replace `Code.gs` with the entire `paste-into-apps-script/ProjectPomfret.gs`. Do not also add the separate generated modules.
+3. Enable the manifest in Apps Script project settings and use `apps-script/appsscript.json`. Its only OAuth scope is the current spreadsheet.
+4. Save and reload the spreadsheet. Select **Project: Pomfret → Make practice data**. This refuses to run if any sheet contains data.
+5. Run **Prepare students**, **Count interest**, then **Sort** with a reason. Read `PP Interest`, `PP Summary`, `PP Check` and `PP Needs you` before using the grade masters or project rosters.
+
+**Check again** checks edited grade masters against the saved run and flags changed source inputs. It does not yet rebuild every derived table.
+
+Sources are `Senior`, `Junior`, `Sophomore` and `Projects`. Normal preparation and sorting read them without changing them. Controls are `Settings`, `Project choices`, `Status changes` and `Gender`. Generated review and roster tabs start with `PP `.
+
+## Optional private workbook preview
+
+The reader is included for authorized local work with copies of the supplied exports. It requires Python 3 with `openpyxl` available. It opens originals read-only, verifies hashes, passes values to Node through stdin and prints aggregate receipts.
+
+```sh
+python3 scripts/prepare-local-data.py --source-dir /path/to/approved/copies
+```
+
+The four expected filenames are listed in `scripts/prepare-local-data.py`. Optional `--handoff /path/to/handoff.txt` records that file's checksum; `--node` selects a Node executable. Default output is the sibling `../case-f-private/attached-data.js`, outside this repository. Keep that location to use `preview/index.html` locally. Missing or invalid private data displays an error, never a fallback to invented students.
+
+Do not serve the parent folder, publish the private preview, or commit workbook exports. The public builder uses an explicit file allowlist and only invented records. The importer is a development tool, not permission to process school data.
+
+## Where to work
+
+| Location | Responsibility |
+| --- | --- |
+| `core/` | Shared catalog, form parser, deterministic matching and checks. |
+| `preview/` | Two-screen interface, walkthrough, exports and browser practice generator. |
+| `apps-script/Main.gs` | Sheets menu, controls, source reads, outputs, run log and practice generator. |
+| `apps-script/Catalog.gs`, `Parse.gs`, `Engine.gs` | Generated copies; edit the core JavaScript. |
+| `paste-into-apps-script/ProjectPomfret.gs` | Committed single-file installation, tested end to end. |
+| `scripts/` | Bundle, browser build, demo runner, localhost server, private importer and code-only archive utility. |
+| `tests/` | Synthetic fixtures, spreadsheet simulator and regression checks. |
+| `.github/workflows/test.yml` | Node 22 checks, demo, build and generated-file parity. |
+
+[BRIEF.md](BRIEF.md) explains the goals. [CONTRACT.md](CONTRACT.md) describes module interfaces. [SOURCE-AUDIT.md](SOURCE-AUDIT.md) maps sources and gaps. [VERIFICATION.md](VERIFICATION.md) records actual checks.
+
+Luke leads Case F and assigns delivery work. Cayden is club lead; Keke coordinates club operations. Use feature branches and an independently reviewed PR into `main`. No student records, school document links, credentials or deployment account metadata in this repository. The existing CODEOWNERS file is preserved; ownership changes belong to maintainers.
