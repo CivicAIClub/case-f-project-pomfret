@@ -1385,22 +1385,27 @@ var PPEngine = (function () {
     function name(id){return byId[id].name||id;}
     function remark(id,kind,text){var n=notes[id]=notes[id]||{reason:[],flags:[]};n[kind].push(text);}
     // Make the changes if every rule still holds; otherwise undo them and say which rule stopped it.
-    // drop(id) is how many steps of fit that student may lose in all. The changes are judged together,
-    // so a student's two Minors can trade weeks. A dry run always undoes.
+    // drop(id) is how many steps of fit that student may lose in all. asked(id) is true for a student
+    // who asked for the change; nobody else may end up in fewer projects they checked. That is judged
+    // by the projects they checked, not the fit number, so it holds whatever checkedBeforeInferred
+    // says. The changes are judged together, so a student's two Minors can trade weeks. A dry run
+    // always undoes.
     function tiers(id){return where[id].filter(Boolean).reduce(function(n,pid){return n+tier(id,pid);},0);}
-    function attempt(changes,drop,keepMet,dry){
-      var ids=changes.map(function(c){return c.id;}).filter(function(id,i,all){return all.indexOf(id)===i;}),stop=null,undo=[],before={},fitBefore={};
+    function held(id){return where[id].filter(function(pid){return pid&&arr(byId[id].choices).indexOf(pid)>=0;}).length;}
+    function attempt(changes,drop,keepMet,dry,asked){
+      var ids=changes.map(function(c){return c.id;}).filter(function(id,i,all){return all.indexOf(id)===i;}),stop=null,undo=[],before={},fitBefore={},heldBefore={};
       changes.some(function(c){
         if(fixed[c.id])stop=fixed[c.id];
         else if(!allowed(byId[c.id],project[c.to],choices))stop="Would put a student in last year's project";
         return !!stop;
       });
       if(stop)return stop;
-      ids.forEach(function(id){fitBefore[id]=tiers(id);});
+      ids.forEach(function(id){fitBefore[id]=tiers(id);heldBefore[id]=held(id);});
       var met=keepMet?involving(ids,'With').filter(function(q){return together(q.from,q.to);}):[],apartBefore=involving(ids,'Not with').filter(function(q){return !together(q.from,q.to);});
       changes.forEach(function(c){var w=track[c.id]==='Major'?0:c.w,old=group(c.id,w),now;undo.push({id:c.id,w:w,from:where[c.id][w]});if(!(old in before))before[old]=size[old];size[old]--;where[c.id][w]=c.to;now=group(c.id,w);if(!(now in before))before[now]=size[now]||0;size[now]=(size[now]||0)+1;});
       ids.some(function(id){
         if(track[id]==='Minor'&&where[id][0]===where[id][1])stop='Would give a Minor student the same project twice';
+        else if(!asked(id)&&held(id)<heldBefore[id])stop='Would move another student out of a project they checked';
         else if(tiers(id)-fitBefore[id]>drop(id))stop=drop(id)>0?'Would drop more than one step in fit':'Would give another student a worse fit';
         return !!stop;
       });
@@ -1410,7 +1415,7 @@ var PPEngine = (function () {
       if(stop||dry)undo.reverse().forEach(function(u){var g=group(u.id,u.w);size[g]--;where[u.id][u.w]=u.from;g=group(u.id,u.w);size[g]=(size[g]||0)+1;});
       return stop;
     }
-    var any=function(){return Infinity;};
+    var any=function(){return Infinity;},everyone=function(){return true;},nobody=function(){return false;};
     // "Not with" is a hard rule. The student who wrote the request moves to their best other group,
     // even when moving the classmate would cost less. Only when the writer is locked or leading does
     // the classmate move instead. The move may cost more than one step, so it is flagged.
@@ -1419,9 +1424,9 @@ var PPEngine = (function () {
       for(var round=0;round<2&&together(q.from,q.to);round++){
         if(!mover){stuck[q.line.row]=fixed[q.from];break;}
         var shared=groupsOf(q.from).filter(function(g){return groupsOf(q.to).indexOf(g)>=0;})[0],w=track[mover]==='Major'?0:Number(shared.split('|')[1]),here=where[mover][w];
-        var pick=projects.filter(function(p){return p.finalLength===track[mover]&&p.id!==here;}).map(function(p){return {id:mover,w:w,to:p.id,loss:tier(mover,p.id)-tier(mover,here)};}).sort(function(a,b){return a.loss-b.loss||compare(a.to,b.to);}).filter(function(o){return !attempt([o],any,false,true);})[0];
+        var pick=projects.filter(function(p){return p.finalLength===track[mover]&&p.id!==here;}).map(function(p){return {id:mover,w:w,to:p.id,loss:tier(mover,p.id)-tier(mover,here)};}).sort(function(a,b){return a.loss-b.loss||compare(a.to,b.to);}).filter(function(o){return !attempt([o],any,false,true,everyone);})[0];
         if(!pick){stuck[q.line.row]='Could not be moved apart without breaking another rule';break;}
-        attempt([pick],any,false,false);apart.push(q);
+        attempt([pick],any,false,false,everyone);apart.push(q);
         remark(mover,'flags',mover!==q.from?'Moved because a classmate asked not to work with them.':'Moved to another group because of a "Not with" friend request. '+(pick.loss>0?'Fit dropped '+pick.loss+(pick.loss===1?' step.':' steps.'):'Fit did not drop.'));
       }
     });
@@ -1442,16 +1447,17 @@ var PPEngine = (function () {
       if(track[id]==='Minor')mine.some(function(q){
         var mineNow=where[id],theirs=where[q.to];
         if(!mineNow.some(function(pid,w){return theirs[1-w]===pid;}))return false;
-        return [id,q.to].some(function(who){return !attempt([{id:who,w:0,to:where[who][1]},{id:who,w:1,to:where[who][0]}],function(){return 0;},true,false)&&(done={mover:who,other:who===id?q.to:id,q:q,switched:true});});
+        return [id,q.to].some(function(who){return !attempt([{id:who,w:0,to:where[who][1]},{id:who,w:1,to:where[who][0]}],function(){return 0;},true,false,nobody)&&(done={mover:who,other:who===id?q.to:id,q:q,switched:true});});
       });
       // 1. Move the student into a named classmate's group.
-      if(!done)mine.some(function(q){return weeks.some(function(w){return works(attempt([{id:id,w:w,to:where[q.to][w]}],only(id),true,false))&&(done={mover:id,other:q.to,q:q});});});
+      if(!done)mine.some(function(q){return weeks.some(function(w){return works(attempt([{id:id,w:w,to:where[q.to][w]}],only(id),true,false,only(id)))&&(done={mover:id,other:q.to,q:q});});});
       // 2. If they named each other, move the classmate into the student's group.
-      if(!done)mine.filter(function(q){return q.mutual;}).some(function(q){return weeks.some(function(w){return works(attempt([{id:q.to,w:w,to:where[id][w]}],only(q.to),true,false))&&(done={mover:q.to,other:id,q:q});});});
-      // 3. Swap the student with a third student in a named classmate's group, in the same week and track.
+      if(!done)mine.filter(function(q){return q.mutual;}).some(function(q){return weeks.some(function(w){return works(attempt([{id:q.to,w:w,to:where[id][w]}],only(q.to),true,false,only(q.to)))&&(done={mover:q.to,other:id,q:q});});});
+      // 3. Swap the student with a third student in a named classmate's group, in the same week and
+      // track. The third student never gets a worse fit or leaves a project they checked.
       if(!done)mine.some(function(q){return weeks.some(function(w){
         var target=where[q.to][w],here=where[id][w];
-        return Object.keys(where).filter(function(t){return t!==id&&t!==q.to&&track[t]===track[id]&&where[t][w]===target;}).sort(run.tie.ids).some(function(t){return works(attempt([{id:id,w:w,to:target},{id:t,w:w,to:here}],only(id),true,false))&&(done={mover:id,other:q.to,q:q,third:t});});
+        return Object.keys(where).filter(function(t){return t!==id&&t!==q.to&&track[t]===track[id]&&where[t][w]===target;}).sort(run.tie.ids).some(function(t){return works(attempt([{id:id,w:w,to:target},{id:t,w:w,to:here}],only(id),true,false,only(id)))&&(done={mover:id,other:q.to,q:q,third:t});});
       });});
       if(!done){why[id]=first;return;}
       joined.push(done.q);withs.forEach(function(o){if(done.q.mutual&&o.from===done.q.to&&o.to===done.q.from)joined.push(o);});
@@ -1461,16 +1467,14 @@ var PPEngine = (function () {
     });
     // Gender: fix groups that break the rule (no Male students or at least three, and the same for
     // Female) by swapping students between groups in the same week and track. A swap needs every rule
-    // above to still hold, drops each student at most one step, and never moves a student from a
-    // project they checked to one they didn't. The smallest total drop in fit goes first, then the
+    // above to still hold, drops each student at most one step, and never leaves a student in fewer
+    // projects they checked (nobody asked for it). The smallest total drop in fit goes first, then the
     // swap that drops seniors least, then tie order. Unknown genders never move.
     if(move&&cfg.balanceGender){
       var gender={},count={};Object.keys(where).forEach(function(id){gender[id]=genderOf(byId[id].gender);});
       function bad(c){c=c||{Male:0,Female:0};return (c.Male>0&&c.Male<3?1:0)+(c.Female>0&&c.Female<3?1:0);}
       function shifted(c,out,into){var d={Male:0,Female:0};if(c){d.Male=c.Male;d.Female=c.Female;}d[out]--;d[into]++;return d;}
       function better(a,b){for(var i=0;i<a.length;i++)if(a[i]!==b[i])return a[i]<b[i];return false;}
-      // A swap never takes a student out of a project they checked and into one they didn't.
-      function lost(id,from,to){return arr(byId[id].choices).indexOf(from)>=0&&arr(byId[id].choices).indexOf(to)<0;}
       for(var round=0;round<1000;round++){
         count={};Object.keys(where).forEach(function(id){if(gender[id])groupsOf(id).forEach(function(g){var c=count[g]=count[g]||{Male:0,Female:0};c[gender[id]]++;});});
         var best=null,movable=Object.keys(where).filter(function(id){return gender[id]&&!fixed[id];}).sort(run.tie.ids);
@@ -1481,15 +1485,15 @@ var PPEngine = (function () {
             if(gender[y]===gender[x]||track[y]!==track[x]||h===g)return;
             if(bad(count[g])+bad(count[h])<=bad(shifted(count[g],gender[x],gender[y]))+bad(shifted(count[h],gender[y],gender[x])))return;
             var dx=tier(x,where[y][w])-tier(x,where[x][w]),dy=tier(y,where[x][w])-tier(y,where[y][w]);
-            if(dx>1||dy>1||lost(x,where[x][w],where[y][w])||lost(y,where[y][w],where[x][w]))return;
+            if(dx>1||dy>1)return;
             var score=[dx+dy,(byId[x].grade===12?Math.max(0,dx):0)+(byId[y].grade===12?Math.max(0,dy):0),run.tie.keys[x],run.tie.keys[y]];
             if(best&&!better(score,best.score))return;
-            if(!attempt([{id:x,w:w,to:where[y][w]},{id:y,w:w,to:where[x][w]}],function(){return 1;},true,true))best={score:score,x:x,y:y,w:w};
+            if(!attempt([{id:x,w:w,to:where[y][w]},{id:y,w:w,to:where[x][w]}],function(){return 1;},true,true,nobody))best={score:score,x:x,y:y,w:w};
           });});
         });
         if(!best)break;
         var bx=where[best.x][best.w],by=where[best.y][best.w];
-        attempt([{id:best.x,w:best.w,to:by},{id:best.y,w:best.w,to:bx}],function(){return 1;},true,false);
+        attempt([{id:best.x,w:best.w,to:by},{id:best.y,w:best.w,to:bx}],function(){return 1;},true,false,nobody);
         [best.x,best.y].forEach(function(id){remark(id,'reason','Swapped with a student in another group to balance the groups.');});
       }
     }

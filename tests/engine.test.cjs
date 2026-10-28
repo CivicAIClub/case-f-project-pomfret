@@ -602,3 +602,21 @@ test('"Not with" moves the student who wrote the request, and the classmate only
   assert.deepEqual(both.friends.map(x=>[x.result,x.why]),[['Together','Locked in place by hand']]);
   assert.ok(both.checks.some(c=>c.code==='NOT_WITH_TOGETHER'));
 });
+
+test('with checkedBeforeInferred FALSE, a swap that would move a third student out of a project they checked is refused',()=>{
+  // a and b hold two each. ann (a) asked for bea (b), and b is full, so only a swap with t can join
+  // them. t checked b but shares neither its Type nor its UN goal, and didn't check a, which matches
+  // both. With checkedBeforeInferred FALSE that is fit 5 in b and fit 4 in a: no worse a number, but
+  // t would leave the project they checked. Under either setting a checked project can't share a fit
+  // number with an unchecked one, so a better number is the case to test.
+  const projects=[p('a'),p('b','Major',{types:['feet'],goals:['9']})];
+  const students=[s('ann',{grade:12,choices:['a','b'],types:['hands','feet']}),s('u',{choices:['a','z']}),s('bea',{choices:['b','z'],types:['feet'],goals:['9']}),s('t',{choices:['b','z']})];
+  const cfg=config({maxSize:2,targetSize:2,useFriendRequests:true,checkedBeforeInferred:false}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);
+  const plain=E.sort(students,projects,cfg,{});
+  assert.deepEqual(['ann','u','bea','t'].map(id=>at(plain,id).project1),['a','a','b','b']);
+  assert.equal(E.fit(students[3],projects[1],cfg).tier,5); assert.equal(E.fit(students[3],projects[0],cfg).tier,4);
+  const r=E.sort(students,projects,cfg,{},{friends:[ask('ann','bea')]});
+  assert.deepEqual(['ann','u','bea','t'].map(id=>at(r,id).project1),['a','a','b','b']);
+  assert.ok(!at(r,'t').reason.includes('Swapped into this group'));
+  assert.deepEqual(r.friends.map(x=>x.result),['Not together']);
+});
