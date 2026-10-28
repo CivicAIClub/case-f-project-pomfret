@@ -130,16 +130,32 @@ test('header matching handles reordered senior comments, choice blocks and leade
   const result=parser.prepare([{name:'Senior',values}],projects).students[0];
   assert.equal(result.status,'eligible'); assert.equal(result.preference,'Minor'); assert.deepEqual(result.choices,['robotics']); assert.equal(result.comments,values[1][8]);
 });
-test('missing Sophomore prior question warns without blocking all students',()=>{
-  const t=table([row()],10); t.values=t.values.map(r=>r.filter((_,i)=>i!==3)); t.backgrounds=t.backgrounds.map(r=>r.filter((_,i)=>i!==3));
-  const result=parser.prepare([t],projects); assert.equal(result.students[0].status,'eligible'); assert.equal(result.students[0].previousKnown,false); assert.ok(result.issues.some(i=>i.code==='PREVIOUS_UNAVAILABLE'));
+test('missing Sophomore prior question is one PP Input check line, not a flag on every sophomore',()=>{
+  const t=table([row(),row('second@example.org','Example, Second')],10); t.values=t.values.map(r=>r.filter((_,i)=>i!==3)); t.backgrounds=t.backgrounds.map(r=>r.filter((_,i)=>i!==3));
+  const result=parser.prepare([t],projects);
+  assert.ok(result.students.every(s=>s.status==='eligible' && s.previousKnown && !s.issues.some(x=>/last year|previous/i.test(x))));
+  assert.equal(result.issues.filter(i=>i.code==='PREVIOUS_UNAVAILABLE').length,1);
+  const run=engine.sort(result.students,projects,smallRun,{});
+  assert.ok(run.assignments.every(a=>a.status==='placed' && !a.flags.some(x=>/past project/i.test(x))));
+  assert.ok(!run.checks.some(c=>c.code==='PREVIOUS_UNAVAILABLE'));
 });
-test('known prior aliases exclude current combined project; unknown substantive prior stays review',()=>{
+test('known prior aliases exclude current combined project; an unreadable last-year answer keeps the student eligible with a flag',()=>{
   const a=row(); a[3]='Healthy Minds, Healthy Bodies';
-  const b=row('unknown@example.org','Example, Unknown'); b[3]='A mystery workshop';
-  const result=parser.prepare([table([a,b])],projects);
+  const b=row('unknown@example.org','Example, Unknown'); b[3]='A mystery workshop.';
+  const result=parser.prepare([table([a,b])],projects), unknown=result.students.find(s=>s.email===b[1]);
   assert.deepEqual(result.students.find(s=>s.email===a[1]).previous,['fueling-the-body-healthy-bodies']);
-  assert.equal(result.students.find(s=>s.email===b[1]).status,'review');
+  assert.equal(unknown.status,'eligible'); assert.deepEqual(unknown.previous,[]);
+  assert.ok(unknown.issues.includes('Couldn\'t match last year\'s project: A mystery workshop.'));
+  assert.equal(engine.sort([unknown],projects,smallRun,{}).assignments[0].status,'placed');
+});
+test('a readable part of last year\'s answer still blocks that project',()=>{
+  const r=row('repeat@example.org','Example, Repeat'); r[3]='Robotics, A mystery workshop'; r[7]='Robotics, App Building';
+  const student=parser.prepare([table([r])],projects).students[0];
+  assert.equal(student.status,'eligible'); assert.deepEqual(student.previous,['robotics']);
+  assert.ok(student.issues.includes('Couldn\'t match last year\'s project: Robotics, A mystery workshop.'));
+  const run=engine.sort([student],projects,{...smallRun,projectCount:2},{});
+  assert.equal(run.assignments[0].status,'placed'); assert.equal(run.assignments[0].project1,'stem-app-building');
+  assert.ok(engine.check([student],[{...projects[0],finalLength:'Major'}],[{studentId:student.id,status:'placed',project1:'robotics',project2:null,fit1:1,fit2:null}],smallRun,{}).some(c=>c.code==='PREVIOUS_PROJECT'));
 });
 test('retired prior titles recognized without guessing renamed equivalents',()=>{
   const previous=parser.parsePrevious('Criminal Justice, Robotics',projects);
@@ -156,11 +172,12 @@ test('gender only from supplied map; conflicting values remain unknown',()=>{
   const result=parser.prepare([table([r])],projects,{genders:[{email:r[1],gender:'Group A'},{email:r[1],gender:'Group B'}]});
   assert.equal(result.students[0].gender,null); assert.ok(result.issues.some(i=>i.code==='CONFLICTING_GENDER'));
 });
-test('status override cannot bypass an unresolved prior project or required preference',()=>{
+test('status override cannot bypass a required preference, and an unread prior project needs no override',()=>{
   const a=row(); a[3]='Unrecognized historical project';
   const b=row('missing-pref@example.org','Example, Missing Preference'); b[6]='';
   const result=parser.prepare([table([a,b])],projects,{statusChanges:[{email:a[1],status:'eligible',why:'Move from review'},{email:b[1],status:'late',why:'Move from review'}]});
-  assert.ok(result.students.every(s=>s.status==='review')); assert.equal(result.issues.filter(i=>i.code==='UNRESOLVED_RESPONSE').length,2);
+  assert.equal(result.students.find(s=>s.email===a[1]).status,'eligible'); assert.equal(result.students.find(s=>s.email===b[1]).status,'review');
+  assert.equal(result.issues.filter(i=>i.code==='UNRESOLVED_RESPONSE').length,1);
 });
 test('explicit no-prior answers and supplied gender capitalization normalize consistently',()=>{
   const a=row(); a[3]='I did not participate in Project: Pomfret';

@@ -217,16 +217,18 @@ var PPParser = (function () {
         var selected = unique([].concat.apply([], c.choices.map(function (i) { return matchingProjects(row[i], projects, true); })));
         if (!selected.length) problems.push('No current running project was checked.');
         else if (selected.length === 1) problems.push('Only one current project was checked; there is no priority bonus for a narrow choice.');
-        var previous = c.previous >= 0 ? parsePrevious(row[c.previous], projects) : {ids:[],known:false,unresolved:false,retired:[]};
-        if (!previous.known) problems.push(c.previous < 0 ? 'Previous-project question was not supplied.' : 'Previous projects are missing or contain an unrecognized title.');
-        if (previous.unresolved && status !== 'trip' && status !== 'leader') status = 'review';
+        // Last year's answer never blocks a student. Projects it names still count as repeats and
+        // anything else is flagged. A grade whose form doesn't ask gets one PP Input check line above.
+        var answer = c.previous >= 0 ? text(row[c.previous]) : '', previous = parsePrevious(answer, projects);
+        if (c.previous >= 0 && !answer) problems.push('No answer about last year\'s project.');
+        if (previous.unresolved) problems.push('Couldn\'t match last year\'s project: ' + answer.replace(/\s+/g, ' ').replace(/[.\s]+$/, '') + '.');
         if (previous.retired.length) problems.push('Historical project not on current list; no renamed-project equivalence was assumed.');
         rows.push({
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
-          previousKnown:previous.known, status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
+          previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
-          _blocked:identityInvalid || !pref || previous.unresolved || (parsedTime === null && !COLORS[colorOf(fill)]),
+          _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
         });
       });
