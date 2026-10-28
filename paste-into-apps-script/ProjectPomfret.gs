@@ -678,6 +678,30 @@ var PPParser = (function () {
     var email = text(value).toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
   }
+  /* Names arrive as "Last, First" or "First Last" with any spacing or capitals.
+   * Without a comma the first word is the first name and the last name is one or
+   * more of the final words, so "Jo Ann Smith" can match "Smith, Jo" or "Ann Smith, Jo". */
+  function nameParts(value) {
+    var raw = text(value), comma = raw.indexOf(','), words = normalize(raw).split(' ').filter(Boolean);
+    if (comma >= 0) {
+      var last = normalize(raw.slice(0, comma));
+      return {words:words, first:normalize(raw.slice(comma + 1)).split(' ')[0], lasts:last ? [last] : []};
+    }
+    if (words.length < 2) return {words:words, first:'', lasts:words};
+    return {words:words, first:words[0], lasts:words.slice(1).map(function (_, i) { return words.slice(i + 1).join(' '); })};
+  }
+  function sameLastName(a, b) { return a.lasts.some(function (last) { return b.lasts.indexOf(last) >= 0; }); }
+  // The same first name, or one that starts with the other's first three letters (Nick and Nicholas).
+  function sameFirstName(a, b) {
+    if (!a.first || !b.first) return false;
+    return a.first === b.first || a.first.indexOf(b.first.slice(0, 3)) === 0 || b.first.indexOf(a.first.slice(0, 3)) === 0;
+  }
+  function sameName(a, b) {
+    var x = nameParts(a), y = nameParts(b);
+    if (x.words.length && x.words.slice().sort().join(' ') === y.words.slice().sort().join(' ')) return true;
+    return sameLastName(x, y) && sameFirstName(x, y);
+  }
+  function nameSpelling(value) { return nameParts(value).words.slice().sort().join(' '); }
   function timestamp(value) {
     if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
     if (typeof value === 'number' && Number.isFinite(value)) return value > 100000000000 ? value : Math.round((value - 25569) * 86400000);
@@ -761,16 +785,17 @@ var PPParser = (function () {
     if (/soph/.test(n)) return 10;
     throw new Error('Specify grade 10, 11 or 12 for ' + text(table.name) + '.');
   }
-  function issue(code, severity, message, source) {
+  function issue(code, severity, message, source, studentId) {
     var value = {code:code, severity:severity, message:message};
     if (source) value.source = source;
+    if (studentId) value.studentId = studentId;
     return value;
   }
   function prepare(tables, projects, options) {
     options = options || {};
     if (!Array.isArray(tables) || !tables.length) throw new Error('No grade source tables were supplied.');
     if (!Array.isArray(projects) || !projects.length) throw new Error('No projects were supplied.');
-    var rows = [], issues = [], stats = {rawRows:0, students:0, droppedDuplicates:0, byGrade:{}, byStatus:{}, identityConflicts:0};
+    var rows = [], issues = [], stats = {rawRows:0, students:0, droppedDuplicates:0, mergedRows:0, byGrade:{}, byStatus:{}, identityConflicts:0};
     tables.forEach(function (table) {
       if (!table.values || !Array.isArray(table.values[0])) throw new Error('Missing header row in ' + text(table.name) + '.');
       var c;
@@ -799,52 +824,119 @@ var PPParser = (function () {
         var selected = unique([].concat.apply([], c.choices.map(function (i) { return matchingProjects(row[i], projects, true); })));
         if (!selected.length) problems.push('No current running project was checked.');
         else if (selected.length === 1) problems.push('Only one current project was checked; there is no priority bonus for a narrow choice.');
-        var previous = c.previous >= 0 ? parsePrevious(row[c.previous], projects) : {ids:[],known:false,unresolved:false,retired:[]};
-        if (!previous.known) problems.push(c.previous < 0 ? 'Previous-project question was not supplied.' : 'Previous projects are missing or contain an unrecognized title.');
-        if (previous.unresolved && status !== 'trip' && status !== 'leader') status = 'review';
+        // Last year's answer never blocks a student. Projects it names still count as repeats and
+        // anything else is flagged. A grade whose form doesn't ask gets one PP Input check line above.
+        var answer = c.previous >= 0 ? text(row[c.previous]) : '', previous = parsePrevious(answer, projects);
+        if (c.previous >= 0 && !answer) problems.push('No answer about last year\'s project.');
+        if (previous.unresolved) problems.push('Couldn\'t match last year\'s project: ' + answer.replace(/\s+/g, ' ').replace(/[.\s]+$/, '') + '.');
         if (previous.retired.length) problems.push('Historical project not on current list; no renamed-project equivalence was assumed.');
         rows.push({
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
-          previousKnown:previous.known, status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
+          previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
-          _blocked:identityInvalid || !pref || previous.unresolved || (parsedTime === null && !COLORS[colorOf(fill)]),
+          _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
         });
       });
     });
     var byEmail = {}, kept = [];
     rows.forEach(function (s) { if (!s.email) kept.push(s); else (byEmail[s.email] || (byEmail[s.email] = [])).push(s); });
-    Object.keys(byEmail).sort().forEach(function (email) {
-      var group = byEmail[email], identities = unique(group.map(function (s) { return s.grade + ':' + s._nameKey; }));
-      if (identities.length > 1) {
-        group.forEach(function (s) { s.id += ':' + slug(s.source.sheet) + ':' + s.source.row; s.status = 'review'; s._invalid = true; s.issues.push('Email is shared by different names or grades; do not merge these identities.'); kept.push(s); });
-        stats.identityConflicts += group.length;
-        issues.push(issue('IDENTITY_CONFLICT', 'error', 'One email identifies different names or grades. All affected rows are in review.', group[0].source));
-        return;
+    function newestFirst(a, b) { return b._time - a._time || b.source.row - a.source.row || a.source.sheet.localeCompare(b.source.sheet); }
+    // One student's repeated forms: the newest wins, and a trip or leader color on any of them is kept.
+    function keepNewest(person) {
+      person.sort(newestFirst);
+      var winner = person[0], exclusions = unique(person.map(function (s) { return s._colorStatus; }).filter(function (s) { return s === 'trip' || s === 'leader'; }));
+      if (exclusions.length === 1) winner.status = exclusions[0];
+      if (exclusions.length > 1) { winner.status = 'review'; winner.issues.push('Duplicate submissions disagree on trip/freshman-leader exclusion.'); }
+      if (person.length > 1) {
+        stats.droppedDuplicates += person.length - 1;
+        winner.issues.push('Latest timestamped submission retained; ' + (person.length - 1) + ' older submission(s) removed.');
+        if (unique(person.map(function (s) { return nameSpelling(s.name); })).length > 1) {
+          winner.issues.push('An older form from this email gave the name differently. Check it\'s the same student.');
+          issues.push(issue('DUPLICATE_SUBMISSION', 'warning', 'Kept the newest form from one email. An older form gave the name differently, so check it\'s the same student.', winner.source));
+        } else issues.push(issue('DUPLICATE_SUBMISSION', 'info', 'Older timestamped submission removed; latest retained.', winner.source));
       }
+      return winner;
+    }
+    Object.keys(byEmail).sort().forEach(function (email) {
+      var group = byEmail[email], people = [], students = [];
       // Only valid timestamped submissions are duplicate form submissions. Typed roster rows survive.
       var submissions = group.filter(function (s) { return s._time !== null; }), typed = group.filter(function (s) { return s._time === null; });
-      submissions.sort(function (a,b) { return b._time - a._time || b.source.row - a.source.row || a.source.sheet.localeCompare(b.source.sheet); });
-      if (submissions.length) {
-        var winner = submissions[0], exclusions = unique(submissions.map(function (s) { return s._colorStatus; }).filter(function (s) { return s === 'trip' || s === 'leader'; }));
-        if (exclusions.length === 1) winner.status = exclusions[0];
-        if (exclusions.length > 1) { winner.status = 'review'; winner.issues.push('Duplicate submissions disagree on trip/freshman-leader exclusion.'); }
-        if (submissions.length > 1) {
-          stats.droppedDuplicates += submissions.length - 1;
-          winner.issues.push('Latest timestamped submission retained; ' + (submissions.length - 1) + ' older submission(s) removed.');
-          issues.push(issue('DUPLICATE_SUBMISSION', 'info', 'Older timestamped submission removed; latest retained.', winner.source));
+      var named = submissions.filter(function (s) { return s._nameKey; }), nameless = submissions.filter(function (s) { return !s._nameKey; });
+      // Forms whose names match are one student. Clearly different names are different students.
+      named.forEach(function (s) {
+        var person = people.filter(function (p) { return p.some(function (other) { return sameName(s.name, other.name); }); })[0];
+        if (person) person.push(s); else people.push([s]);
+      });
+      if (!people.length && nameless.length) people.push(nameless);
+      else nameless.forEach(function (s) { s.id += ':' + slug(s.source.sheet) + ':' + s.source.row; kept.push(s); });
+      people.forEach(function (person) {
+        if (unique(person.map(function (s) { return s.grade; })).length > 1) {
+          person.forEach(function (s) { s.id += ':' + slug(s.source.sheet) + ':' + s.source.row; s.status = 'review'; s._invalid = true; s.issues.push('The same name and email appear in more than one grade. Check which grade is right.'); students.push(s); });
+          stats.identityConflicts += person.length;
+          issues.push(issue('IDENTITY_CONFLICT', 'error', 'One student\'s name and email appear in more than one grade. These rows are in review.', person[0].source));
+          return;
         }
-        kept.push(winner);
+        var winner = keepNewest(person);
+        // The email alone no longer identifies the student, so the ID adds the name.
+        if (people.length > 1) winner.id = email + ':' + slug(normalize(winner.name));
+        students.push(winner);
+      });
+      if (people.length > 1) {
+        var flag = people.length === 2 ? 'Two students sent their forms from the same email. Check that both answers are right.' : people.length + ' students sent their forms from the same email. Check that every answer is right.';
+        students.forEach(function (s) { s._sharedEmail = true; s.issues.push(flag); issues.push(issue('SHARED_EMAIL', 'warning', flag, s.source, s.id)); });
       }
+      students.forEach(function (s) { kept.push(s); });
       typed.forEach(function (s) {
         if (submissions.length || typed.length > 1) { s.id += ':roster:' + slug(s.source.sheet) + ':' + s.source.row; s.issues.push('Roster entry shares an email with another row; reconcile before sorting.'); s._invalid = true; if (s.status !== 'trip' && s.status !== 'leader') s.status = 'review'; }
         kept.push(s);
       });
-      if (submissions.length && typed.length) { submissions[0].status = 'review'; submissions[0]._invalid = true; submissions[0].issues.push('A typed roster entry shares this email; reconcile the duplicate person before sorting.'); }
+      var latest = submissions.slice().sort(newestFirst)[0];
+      if (latest && typed.length) { latest.status = 'review'; latest._invalid = true; latest.issues.push('A typed roster entry shares this email; reconcile the duplicate person before sorting.'); }
+    });
+    // Hand-typed rows have a name but no email or timestamp. Each one joins the one form
+    // in its grade with a matching name, or the last name alone if only one form has it.
+    // A trip or leader row needs the full name: a shared last name would turn a student
+    // who filled out the form into a trip or leader.
+    var responses = kept.filter(function (s) { return s.email && s._time !== null; });
+    var handTyped = kept.filter(function (s) { return !s.email && s._time === null && s._nameKey; }).map(function (row) {
+      var sameGrade = responses.filter(function (s) { return s.grade === row.grade; });
+      var full = sameGrade.filter(function (s) { return sameName(row.name, s.name); });
+      var excluded = row._colorStatus === 'trip' || row._colorStatus === 'leader';
+      var lastOnly = full.length || excluded ? [] : sameGrade.filter(function (s) { return sameLastName(nameParts(row.name), nameParts(s.name)); });
+      return {row:row, candidates:full.length ? full : lastOnly, lastOnly:!full.length};
+    });
+    var colorWords = {trip:'trip', leader:'freshman leader', late:'green'};
+    handTyped.forEach(function (match) {
+      var row = match.row, target = match.candidates.length === 1 ? match.candidates[0] : null, color = row._colorStatus;
+      var rivals = handTyped.filter(function (other) { return target && other.candidates.length === 1 && other.candidates[0] === target; }).length;
+      if (match.candidates.length > 1 || rivals > 1) {
+        // Never guess between students. A person decides.
+        row.status = 'review';
+        row.issues = [match.candidates.length > 1 ? 'More than one student matches this name.' : 'Another hand-typed row matches the same form. Check which student this is.'];
+        issues.push(issue('HAND_TYPED_UNCLEAR', 'warning', 'The hand-typed row "' + row.name + '" could be more than one student, so it is in review.', row.source, row.id));
+      } else if (target) {
+        // The row's status color wins. A form still missing required answers stays in review.
+        if (color && !(color === 'late' && target.status === 'review')) target.status = color;
+        if (match.lastOnly) target.issues.push('Matched a hand-typed row by last name only. Check it\'s the same student.');
+        kept.splice(kept.indexOf(row), 1);
+        stats.mergedRows++;
+        issues.push(issue(match.lastOnly ? 'HAND_TYPED_LAST_NAME' : 'HAND_TYPED_MERGED', match.lastOnly ? 'warning' : 'info',
+          'Merged the hand-typed row "' + row.name + '" into the form from "' + target.name + '"' + (match.lastOnly ? ' by last name only. Check it\'s the same student.' : '.') + (color ? ' Its ' + colorWords[color] + ' color was used.' : ''), row.source, target.id));
+      } else if (row.status === 'trip' || row.status === 'leader') {
+        row.issues = [];
+        issues.push(issue('NO_RESPONSE', 'info', 'No form from "' + row.name + '". Kept as ' + colorWords[row.status] + ' and not placed.', row.source, row.id));
+      } else {
+        // The student did not fill out the form. Place them after everyone else.
+        row.status = 'late';
+        row.issues = ['No response: check.'];
+        issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
+      }
     });
     var genders = {};
     (options.genders || []).forEach(function (g) {
+      // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
       var email = emailOf(g.email), gender = text(g.gender).toLowerCase().replace(/\s+/g, ' ');
       if (!email || !gender) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email and a supplied gender.')); return; }
       if (!genders[email]) genders[email] = [];
@@ -854,7 +946,7 @@ var PPParser = (function () {
     statusChanges.forEach(function (change) {
       var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
       if (STATUS.indexOf(status) < 0 || !why || (!email && !name)) { issues.push(issue('INVALID_STATUS_CHANGE', 'error', 'Status change requires a valid status, a reason, and an email or exact name.')); return; }
-      var matches = kept.filter(function (s) { return (!email || s.email === email) && (!name || s._nameKey === name); });
+      var matches = kept.filter(function (s) { return (!email || s.email === email || s.id === email) && (!name || s._nameKey === name); });
       if (matches.length !== 1) { issues.push(issue('AMBIGUOUS_STATUS_CHANGE', 'error', 'Status change did not identify exactly one student.')); return; }
       var target = matches[0];
       if (target._invalid && (status === 'eligible' || status === 'late')) { issues.push(issue('UNRESOLVED_IDENTITY', 'error', 'A status change cannot resolve a missing or conflicting identity.', target.source)); return; }
@@ -863,10 +955,12 @@ var PPParser = (function () {
       target.issues.push('Status changed: ' + why);
     });
     kept.forEach(function (s) {
-      var values = unique(genders[s.email] || []);
+      // A shared email's Gender row cannot tell its students apart; a row with the Student ID can.
+      var values = unique(genders[s.id] || (s._sharedEmail ? [] : genders[s.email]) || []);
+      if (s._sharedEmail && !genders[s.id] && genders[s.email]) issues.push(issue('GENDER_SHARED_EMAIL', 'warning', 'Gender was not used for this student because another student sent a form from the same email. Add a Gender row with this Student ID instead.', s.source, s.id));
       if (values.length === 1) s.gender = values[0];
       if (values.length > 1) { s.issues.push('Conflicting supplied gender values; gender remains unknown.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
-      delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus;
+      delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus; delete s._sharedEmail;
       stats.byGrade[s.grade] = (stats.byGrade[s.grade] || 0) + 1;
       stats.byStatus[s.status] = (stats.byStatus[s.status] || 0) + 1;
     });
@@ -902,13 +996,14 @@ var PPParser = (function () {
     });
     return {projects:projects,issues:issues};
   }
-  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious};
+  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious,sameName:sameName};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPParser;
 
 // Generated from core/engine.js. Edit the core source and rebuild.
 /* Deterministic, local-only placement prototype. The cohort is selected before
- * optimization. Within each Major/Minor cohort, total fit is optimized in
+ * optimization: Minor-preference students, then the Not-sure students who checked
+ * the most running Minors. Within each Major/Minor cohort, total fit is optimized in
  * lexicographic senior/junior/sophomore/green order. This does not guarantee
  * ordered grade means or a globally best cohort/project plan. Balanced quotas
  * are relaxed within the cap when needed; incomplete results are not proofs
@@ -988,13 +1083,18 @@ var PPEngine = (function () {
   function priority(a,b){return Number(a.status==='late')-Number(b.status==='late')||b.grade-a.grade||compare(a.id,b.id);}
   function weight(s,base){return s.status==='late'?1:Math.pow(base,s.grade===12?3:s.grade===11?2:1);}
   function cohort(students,projects,cfg,issues){
-    var active=students.filter(eligible),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length;
+    var active=students.filter(eligible),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
+    minors.forEach(function(p){running[p.id]=true;});
     var lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,active.length-majors*cfg.maxSize),upper=Math.min(cfg.minorMax,minors.length*cfg.maxSize,active.length-majors*cfg.minSize);
     if(lower>upper)issues.push(note('COHORT_CAPACITY','warning','The group sizes cannot fit the requested number of Minor students. Check the project list and Minor student targets.'));
-    var desired=Math.max(0,Math.min(minors.length*cfg.maxSize,lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget));
-    var minor=active.filter(function(s){return s.preference==='Minor';}).sort(priority),unknown=active.filter(function(s){return s.preference==='Not sure';}).sort(priority);
+    var desired=Math.max(0,Math.min(minors.length*cfg.maxSize,lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget)),minimum=Math.min(desired,lower);
+    function minorChecks(s){return arr(s.choices).filter(function(id,i,all){return running[id]&&all.indexOf(id)===i;}).length;}
+    // Every Minor-preference student does Minors. Not-sure students who checked the most running
+    // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
+    var minor=active.filter(function(s){return s.preference==='Minor';}).sort(priority),unknown=active.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(a.status==='late')-Number(b.status==='late')||compare(a.id,b.id);});
     while(minor.length<desired&&unknown.length)minor.push(unknown.shift());
-    if(cfg.allowMajorToMinor){var major=active.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(a.status==='late')-Number(b.status==='late')||a.grade-b.grade||compare(a.id,b.id);});while(minor.length<desired&&major.length)minor.push(major.shift());}
+    // Major-preference students move only while the Minor count is below its minimum.
+    if(cfg.allowMajorToMinor){var major=active.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(a.status==='late')-Number(b.status==='late')||a.grade-b.grade||compare(a.id,b.id);});while(minor.length<minimum&&major.length)minor.push(major.shift());}
     var members={};minor.forEach(function(s){members[s.id]=true;});
     return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority)};
   }
@@ -1040,10 +1140,18 @@ var PPEngine = (function () {
       }
     });return oriented;
   }
+  // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
+  // when Mr. Litowitz moves a student by hand (byHand drops the note about the Minor student minimum).
+  function explain(s,ids,projects,input,choices,byHand){
+    var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
+    var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
+    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to reach the Minor student minimum.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
+    return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
+  }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
   function allocate(students,projects,cfg,choices,scores,issues){
     var groups=cohort(students,projects,cfg,issues),majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';}),base=6*Math.max(1,students.length*2)+1;
-    if(Math.pow(base,3)*6*students.length*2>Number.MAX_SAFE_INTEGER)throw new Error('Dataset is too large for the prototype integer priority costs.');
+    if(Math.pow(base,3)*6*students.length*2>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
     function solve(group,list,units){
       var quota=quotas(group.length,list,cfg,scores),assigned={},relaxed=false;
       for(var attempt=0;attempt<=cfg.maxSize;attempt++){
@@ -1055,11 +1163,10 @@ var PPEngine = (function () {
       if(relaxed)issues.push(note('QUOTA_RELAXED','info',(units===2?'Minor':'Major')+' groups could not all meet the balanced size targets because of project restrictions. They still stay within the maximum.'));
       return assigned;
     }
-    var mp=solve(groups.major,majorProjects,1),np=solve(groups.minor,minorProjects,2),oriented=orient(np,minorProjects),byId={};projects.forEach(function(p){byId[p.id]=p;});
+    var mp=solve(groups.major,majorProjects,1),np=solve(groups.minor,minorProjects,2),oriented=orient(np,minorProjects);
     var minorIds={};groups.minor.forEach(function(s){minorIds[s.id]=true;});
     return students.map(function(s){var a=emptyAssignment(s);if(!eligible(s))return a;var pair=minorIds[s.id]?oriented[s.id]:mp[s.id];if(!pair||pair.length!==(minorIds[s.id]?2:1))return a;
-      a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;var f1=fit(s,byId[pair[0]],cfg),f2=pair[1]?fit(s,byId[pair[1]],cfg):null;a.fit1=f1.tier;a.fit2=f2?f2.tier:null;a.reason=(f2?'Week 1: ':'')+f1.reason+(f2?' Week 2: '+f2.reason:'');
-      if(s.status==='late')a.flags.push('Green status: the app considered this student after everyone else.');if(s.preference==='Major'&&pair.length===2)a.flags.push('This student asked for a Major but received Minors to meet the Minor student target.');if(s.previousKnown===false)a.flags.push('Past project information is missing.');pair.forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)a.flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(f1.tier===6||(f2&&f2.tier===6))a.flags.push('Fit 6: review the placement.');return a;
+      var placement=explain(s,pair,projects,cfg,choices,false);a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;a.fit1=placement.fit1;a.fit2=placement.fit2;a.reason=placement.reason;a.flags=placement.flags;return a;
     });
   }
   function counts(projects,assignments){var out={};projects.forEach(function(p){out[p.id]=[0,0];});assignments.forEach(function(a){if(a.status!=='placed')return;if(out[a.project1])out[a.project1][0]++;if(out[a.project2])out[a.project2][1]++;});return out;}
@@ -1096,10 +1203,13 @@ var PPEngine = (function () {
       if(a.status!=='placed'){if(a.project1||a.project2)out.push(note('HIDDEN_PLACEMENT','error','An excluded or review row still contains a project.',{studentId:s.id}));if(eligible(s)&&a.status==='excluded')out.push(note('WRONG_EXCLUSION','error','Eligible student is marked excluded.',{studentId:s.id}));if((s.status==='trip'||s.status==='leader')&&a.status!=='excluded')out.push(note('EXCLUSION_STATUS','error','Trip or freshman leader is not marked excluded.',{studentId:s.id}));if(a.status==='review')out.push(note('NEEDS_REVIEW','warning','Check the source record or find a complete placement for this student.',{studentId:s.id}));return;}
       if(!eligible(s))out.push(note('INELIGIBLE_PLACED','error','Trip, freshman leader, or unresolved student was placed.',{studentId:s.id}));
       var p1=projectMap[a.project1],p2=projectMap[a.project2];if(!p1)out.push(note('UNKNOWN_PROJECT','error','Project #1 is missing or unknown.',{studentId:s.id}));if(a.project2&&!p2)out.push(note('UNKNOWN_PROJECT','error','Project #2 is unknown.',{studentId:s.id}));
-      if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));
+      if(p1&&p2&&p1.finalLength!==p2.finalLength)out.push(note('MIXED_TRACKS','error','Project #1 and Project #2 mix a Major and a Minor. Use one Major (the same label twice, or one label and a blank) or two different Minors.',{studentId:s.id}));
+      else{if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));}
       if(p1)members[p1.id][0].push(s);if(p2)members[p2.id][1].push(s);
       [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
-      if(s.preference==='Minor'&&p1&&p1.finalLength==='Major')out.push(note('MINOR_PREFERENCE_CHANGED','warning','This student asked for Minors and received a Major.',{studentId:s.id}));if(s.preference==='Major'&&p1&&p1.finalLength==='Minor')out.push(note('MAJOR_TO_MINOR',cfg.allowMajorToMinor?'warning':'error','This student asked for a Major and received Minors.',{studentId:s.id}));
+      // A track change Mr. Litowitz made by hand is his decision, so it is information only.
+      var byHand=a.movedByHand===true?' Moved by hand.':'';
+      if(s.preference==='Minor'&&p1&&p1.finalLength==='Major')out.push(note('MINOR_PREFERENCE_CHANGED',byHand?'info':'warning','This student asked for Minors and received a Major.'+byHand,{studentId:s.id}));if(s.preference==='Major'&&p1&&p1.finalLength==='Minor')out.push(note('MAJOR_TO_MINOR',byHand?'info':cfg.allowMajorToMinor?'warning':'error','This student asked for a Major and received Minors.'+byHand,{studentId:s.id}));
     });
     students.forEach(function(s){if(!seen[s.id])out.push(note('MISSING_STUDENT','error','Student has no assignment or review row.',{studentId:s.id}));else if(seen[s.id]!==1)out.push(note('DUPLICATE_ASSIGNMENT','error','Student has more than one assignment row.',{studentId:s.id}));if(s.previousKnown===false&&eligible(s))out.push(note('PREVIOUS_UNAVAILABLE','warning','Past projects are missing for this student, so the app could not fully check for repeats.',{studentId:s.id}));});
     projects.forEach(function(p){var c=choiceFor(choices,p.id);if(c.run===false)out.push(note('PROJECT_DISABLED','error','Project is selected despite Run = FALSE.',{projectId:p.id}));if(c.length&&p.finalLength!==c.length)out.push(note('LENGTH_CHOICE_IGNORED','error','Selected length differs from the project choice.',{projectId:p.id}));projects.forEach(function(q){if(compare(p.id,q.id)<0&&conflicts(p.id,q.id,choices))out.push(note('PROJECT_CONFLICT','error','Projects cannot run together: '+p.name+' and '+q.name,{projectId:p.id}));});
@@ -1114,7 +1224,7 @@ var PPEngine = (function () {
     return out;
   }
   function fingerprint(value){function stable(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(stable).join(',')+']';return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';}var str=stable(value),h=2166136261;for(var i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return ('00000000'+(h>>>0).toString(16)).slice(-8);}
-  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,sort:sort,check:check,fingerprint:fingerprint};
+  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,fingerprint:fingerprint};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
 
@@ -1125,13 +1235,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
 var PPAdapter = (function () {
   'use strict';
   var INPUTS = [{ name: 'Senior', grade: 12 }, { name: 'Junior', grade: 11 }, { name: 'Sophomore', grade: 10 }];
-  var MASTER_HEADERS = ['Student ID', 'Name', 'Project #1', 'Project #2', 'Status', 'Fit #1', 'Fit #2', 'Reason', 'Review flags', 'Student comment'];
+  // Grade and group tabs get shared, and comments can name other students, so comments stay in PP Students.
+  var MASTER_HEADERS = ['Student ID', 'Name', 'Project #1', 'Project #2', 'Status', 'Fit #1', 'Fit #2', 'Reason', 'Review flags'];
   var SETTING_NOTES = {
     minSize: 'Minimum students in each group or each Minor week.',
     targetSize: 'Preferred group size.', maxSize: 'Absolute group size limit.',
     projectCount: 'Target number of distinct running projects.', minorProjects: 'Target distinct Minor projects, each running twice.',
     minorMin: 'Minimum students taking two Minors.', minorTarget: 'Target students taking two Minors.',
-    minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Allow Major-preference moves when needed; each move is flagged.',
+    minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Let Major-preference students take Minors only while Minors are below minorMin; each move is flagged.',
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.'
   };
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
@@ -1186,8 +1297,9 @@ var PPAdapter = (function () {
       if (matches.length !== 1) throw new Error('Tab "' + name + '" needs exactly one "' + h + '" column.');
       return matches[0];
     });
-    return data.slice(1).filter(function (r) { return r.some(function (v) { return text(v) !== ''; }); }).map(function (r, i) {
-      var o = { _row: i + 2 }; headers.forEach(function (h, j) { o[h] = r[indices[j]]; }); return o;
+    // _row is the sheet row, so blank rows in between don't shift it.
+    return data.map(function (r, i) { return { values: r, row: i + 1 }; }).slice(1).filter(function (x) { return x.values.some(function (v) { return text(v) !== ''; }); }).map(function (x) {
+      var o = { _row: x.row }; headers.forEach(function (h, j) { o[h] = x.values[indices[j]]; }); return o;
     });
   }
   function boolean(v, label, blank) {
@@ -1311,16 +1423,33 @@ var PPAdapter = (function () {
     var p = projects.filter(function (x) { return x.id === id; })[0];
     return p ? (p.finalLength === 'Minor' ? 'MIN-' : 'MAJ-') + p.name : id;
   }
+  function lengthOf(id, projects) {
+    var p = projects.filter(function (x) { return x.id === id; })[0];
+    return p ? p.finalLength : null;
+  }
   function masterName(grade) { return grade === 12 ? 'PP Senior' : grade === 11 ? 'PP Junior' : 'PP Sophomore'; }
+  // Mr. Litowitz moves a student by picking another running project. Sheets always lets a cell be cleared.
+  function projectDropdown(projects) {
+    var labels = projects.map(function (p) { return projectToken(p.id, projects); }).sort();
+    if (!labels.length) return null;
+    return SpreadsheetApp.newDataValidation().requireValueInList(labels, true).setAllowInvalid(false).setHelpText('Pick a running MAJ- or MIN- project, or clear the cell.').build();
+  }
   function output(input, result) {
-    var studentsById = {}, assignmentsById = {};
+    var studentsById = {}, assignmentsById = {}, dropdown = projectDropdown(result.projects);
     input.students.forEach(function (s) { studentsById[s.id] = s; });
     result.assignments.forEach(function (a) { assignmentsById[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade) {
-      write(masterName(grade), MASTER_HEADERS, input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
+      var name = masterName(grade), old = sheet(name);
+      // The last run's dropdowns may list projects that no longer run.
+      if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
+      var rows = input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(a.project2, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; '), s.comments || ''];
-      }));
+        // Like the master list, a Major shows its MAJ- label in both columns.
+        var second = a.project2 || (lengthOf(a.project1, result.projects) === 'Major' ? a.project1 : null);
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(second, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
+      });
+      var tab = write(name, MASTER_HEADERS, rows);
+      if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
     var oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); });
     var newRegistry = [];
@@ -1328,11 +1457,11 @@ var PPAdapter = (function () {
       var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), rows = [];
       result.assignments.forEach(function (a) {
         var s = studentsById[a.studentId]; if (!s || a.status !== 'placed') return;
-        if (a.project1 === p.id) rows.push([p.finalLength === 'Minor' ? 'Week 1' : 'Both weeks', s.name, s.grade, s.id, a.fit1, a.reason, s.comments || '']);
-        if (a.project2 === p.id) rows.push(['Week 2', s.name, s.grade, s.id, a.fit2, a.reason, s.comments || '']);
+        if (a.project1 === p.id) rows.push([p.finalLength === 'Minor' ? 'Week 1' : 'Both weeks', s.name, s.grade, s.id, a.fit1, a.reason]);
+        if (a.project2 === p.id) rows.push(['Week 2', s.name, s.grade, s.id, a.fit2, a.reason]);
       });
       rows.sort(function (a, b) { return String(a[0]).localeCompare(String(b[0])) || b[2] - a[2] || String(a[3]).localeCompare(String(b[3])); });
-      write(name, ['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason', 'Student comment'], rows);
+      write(name, ['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason'], rows);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
     oldRegistry.forEach(function (name) {
@@ -1345,8 +1474,8 @@ var PPAdapter = (function () {
     Object.keys(result.summary.fitCounts || {}).forEach(function (tier) { summaryRows.push(['Fit ' + tier + ' placements', result.summary.fitCounts[tier]]); });
     [12, 11, 10].forEach(function (grade) { var g = (result.summary.byGrade || {})[grade]; if (g) { summaryRows.push(['Grade ' + grade + ' placed', g.placed], ['Grade ' + grade + ' mean fit', g.meanFit == null ? 'Not available' : g.meanFit]); } });
     write('PP Summary', ['Metric', 'Value'], summaryRows.concat([['Fingerprint', result.fingerprint], ['Review status', 'Proposed groups. Read PP Check and PP Needs you before use.']]));
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags', 'Student comment'], result.assignments.filter(function (a) { return a.status === 'review' || (a.flags || []).length || (studentsById[a.studentId].issues || []).length; }).map(function (a) {
-      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; '), s.comments || ''];
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { return a.status === 'review' || (a.flags || []).length || (studentsById[a.studentId].issues || []).length; }).map(function (a) {
+      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; ')];
     }));
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
@@ -1399,12 +1528,42 @@ var PPAdapter = (function () {
     state.assignments.forEach(function (a) { baseline[a.studentId] = a; });
     state.students.forEach(function (s) { known[s.id] = s; });
     state.projects.forEach(function (p) { tokenMap[projectToken(p.id, state.projects)] = p.id; });
+    function track(a) {
+      var one = lengthOf(a.project1, state.projects), two = lengthOf(a.project2, state.projects);
+      if (one === 'Major' && !a.project2) return 'Major';
+      if (one === 'Minor' && two === 'Minor' && a.project1 !== a.project2) return 'Minor';
+      return a.project1 || a.project2 ? 'mixed' : null;
+    }
+    // A student whose projects changed since Sort was moved by hand. Recompute the row the way
+    // Sort would, write it back, and let the checks below report any rule the move breaks.
+    function moveByHand(tab, header, r, a, student, original) {
+      var ids = [a.project1, a.project2].filter(Boolean);
+      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
+      a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
+      if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
+      var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };
+      Object.keys(cells).forEach(function (h) { sheet(tab, true).getRange(r._row, header.indexOf(h) + 1).setValue(safeCell(cells[h])); });
+      var from = track(original), to = track(a), what = !to ? 'Moved by hand out of every project, so this student is not placed.' : !from ? 'Placed by hand.' :
+        from !== to && from !== 'mixed' && to !== 'mixed' ? (to === 'Major' ? 'Moved by hand from two Minors to one Major.' : 'Moved by hand from one Major to two Minors.') : 'Moved by hand.';
+      checks.push({ severity: 'info', code: 'moved_by_hand', studentId: a.studentId, message: what + ' Fit #1, Fit #2 and Reason were updated.' });
+    }
     [12, 11, 10].forEach(function (grade) {
-      records(masterName(grade), MASTER_HEADERS, true).forEach(function (r) {
-        var id = text(r['Student ID']), original = baseline[id], one = text(r['Project #1']), two = text(r['Project #2']);
+      var tab = masterName(grade), header = values(tab, true)[0].map(text);
+      records(tab, MASTER_HEADERS, true).forEach(function (r) {
+        var id = text(r['Student ID']), original = baseline[id], student = known[id], one = text(r['Project #1']), two = text(r['Project #2']);
         var a = { studentId: id, project1: one ? tokenMap[one] || one : null, project2: two ? tokenMap[two] || two : null, status: text(r.Status), reason: text(r.Reason), flags: [], fit1: null, fit2: null };
-        if (known[id] && known[id].grade !== grade) checks.push({ severity: 'error', code: 'wrong_grade_tab', studentId: id, message: 'Student appears in the wrong grade master.' });
-        if (one && !tokenMap[one] || two && !tokenMap[two]) checks.push({ severity: 'error', code: 'unknown_project_token', studentId: id, message: 'Project #1 or #2 does not exactly match a running MAJ-/MIN- project label.' });
+        // A Major is one MAJ- label: in both columns, or in one column with the other blank.
+        if (a.project2 === a.project1 && lengthOf(a.project1, state.projects) === 'Major') a.project2 = null;
+        else if (!a.project1 && lengthOf(a.project2, state.projects) === 'Major') { a.project1 = a.project2; a.project2 = null; }
+        if (student && student.grade !== grade) checks.push({ severity: 'error', code: 'wrong_grade_tab', studentId: id, message: 'Student appears in the wrong grade master.' });
+        var unknown = one && !tokenMap[one] || two && !tokenMap[two];
+        if (unknown) checks.push({ severity: 'error', code: 'unknown_project_token', studentId: id, message: 'Project #1 or #2 does not exactly match a running MAJ-/MIN- project label.' });
+        if (original && student && !unknown && (a.project1 !== original.project1 || a.project2 !== original.project2)) {
+          moveByHand(tab, header, r, a, student, original);
+          if (text(r.Name) !== text(student.name)) checks.push({ severity: 'warning', code: 'manual_edit', studentId: id, message: 'This row differs from the saved program run (Name). The current cells are being checked.' });
+          current.push(a);
+          return;
+        }
         ['project1', 'project2'].forEach(function (key, i) {
           var label = 'Fit #' + (i + 1), raw = r[label], fit = text(raw) === '' ? null : Number(raw);
           if ((typeof raw === 'boolean') || (fit !== null && (!Number.isInteger(fit) || fit < 1 || fit > 6)) || (a[key] && fit === null) || (!a[key] && fit !== null)) {
@@ -1469,7 +1628,7 @@ function PP_menu(action, message) {
 function PP_setup() { PP_menu(PPAdapter.setup, 'Setup is ready. Existing settings were preserved.'); }
 function PP_prepare() { PP_menu(PPAdapter.prepare, 'Read PP Students and PP Input check before counting interest.'); }
 function PP_interest() { PP_menu(PPAdapter.interest, 'Read PP Interest and PP Project check. Final choices belong in Project choices.'); }
-function PP_check() { PP_menu(PPAdapter.checkAgain, 'PP Check now evaluates the current grade master cells against the saved run.'); }
+function PP_check() { PP_menu(PPAdapter.checkAgain, 'PP Check now checks the grade tabs against the saved run. Students moved by hand have a new Fit, Reason and flags.'); }
 function PP_practice() { PP_menu(PPAdapter.practice, 'Practice data is ready. Run Prepare students, Count interest, then Sort.'); }
 function PP_sort() {
   var ui = SpreadsheetApp.getUi(), response = ui.prompt('Why are you running the sort?', 'Describe the rule or client decision for PP Run log.', ui.ButtonSet.OK_CANCEL);

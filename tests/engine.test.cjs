@@ -107,3 +107,62 @@ test('240-student synthetic run is complete, bounded and reproducible',()=>{
   const start=Date.now(),r=E.sort(students,projects,{},{});
   assert.equal(r.summary.placed,240);assert.equal(r.summary.minorStudents,88);assert.equal(r.summary.projectCount,23);assert.deepEqual(errors(r),[]);assert.equal(r.fingerprint,E.sort(students,projects,{},{}).fingerprint);assert.ok(Date.now()-start<15000);
 });
+
+test('explain gives the fit, reason and flags the sort wrote, and a move by hand drops the Minor minimum note',()=>{
+  const projects=[p('a','Major'),p('m1','Minor'),p('m2','Minor')],cfg=config({projectCount:3,minorProjects:2,minorMin:3,minorTarget:3,minorMax:3});
+  const students=[s('minor',{grade:12,preference:'Minor'}),s('unsure',{grade:12,preference:'Not sure'}),s('soph',{grade:10}),s('junior',{grade:11}),s('senior',{grade:12,status:'late'})];
+  const r=E.sort(students,projects,cfg,{});
+  for(const a of r.assignments){
+    const e=E.explain(students.find(x=>x.id===a.studentId),[a.project1,a.project2].filter(Boolean),r.projects,cfg,{},false);
+    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason,flags:a.flags});
+  }
+  const soph=r.assignments.find(a=>a.studentId==='soph');
+  assert.ok(soph.flags.some(x=>/asked for a Major/.test(x)));
+  assert.ok(!E.explain(students[2],[soph.project1,soph.project2],r.projects,cfg,{},true).flags.some(x=>/asked for a Major/.test(x)));
+});
+
+test('the checker reports a Major-and-Minor pair as an error and a track change by hand as information',()=>{
+  const projects=[{...p('a'),finalLength:'Major'},{...p('m1','Minor'),finalLength:'Minor'},{...p('m2','Minor'),finalLength:'Minor'}],students=[s('1',{preference:'Minor'}),s('2',{preference:'Major'})];
+  const cfg=config({projectCount:3,minorProjects:2,minorMin:0,minorTarget:0,minorMax:3});
+  let checks=E.check(students,projects,[{studentId:'1',status:'placed',project1:'a',project2:'m1',fit1:1,fit2:1},{studentId:'2',status:'placed',project1:'a',project2:null,fit1:1,fit2:null}],cfg,{});
+  assert.ok(checks.some(c=>c.code==='MIXED_TRACKS'&&c.severity==='error'&&c.studentId==='1'));
+  assert.ok(!checks.some(c=>c.code==='MAJOR_SECOND_PROJECT'));
+  const moved=[{studentId:'1',status:'placed',project1:'a',project2:null,fit1:1,fit2:null,movedByHand:true},{studentId:'2',status:'placed',project1:'m1',project2:'m2',fit1:1,fit2:1,movedByHand:true}];
+  checks=E.check(students,projects,moved,{...cfg,allowMajorToMinor:false},{});
+  assert.equal(checks.find(c=>c.code==='MINOR_PREFERENCE_CHANGED').severity,'info');
+  assert.equal(checks.find(c=>c.code==='MAJOR_TO_MINOR').severity,'info');
+  checks=E.check(students,projects,moved.map(a=>({...a,movedByHand:undefined})),{...cfg,allowMajorToMinor:false},{});
+  assert.equal(checks.find(c=>c.code==='MAJOR_TO_MINOR').severity,'error');
+});
+
+// Four running Minors and one Major. Three Minor-preference students leave one Minor spot for a Not-sure student.
+const minorRun=()=>({projects:[p('a'),p('m1','Minor'),p('m2','Minor'),p('m3','Minor'),p('m4','Minor')],cfg:config({projectCount:5,minorProjects:4,minorMin:4,minorTarget:4,minorMax:4}),
+  fixed:[s('pref1',{preference:'Minor',choices:['m1','m2']}),s('pref2',{preference:'Minor',choices:['m3','m4']}),s('pref3',{preference:'Minor',choices:['a']}),s('major1',{grade:12}),s('major2',{grade:12})]});
+test('a Not-sure student who checked more running Minors goes to Minors first, whatever the grades',()=>{
+  const {projects,cfg,fixed}=minorRun();
+  for(const [fourGrade,oneGrade] of [[10,12],[12,10]]){
+    const r=E.sort([...fixed,s('four',{grade:fourGrade,preference:'Not sure',choices:['m1','m2','m3','m4']}),s('one',{grade:oneGrade,preference:'Not sure',choices:['m1','a']})],projects,cfg,{}),at=id=>r.assignments.find(a=>a.studentId===id);
+    assert.ok(at('four').project2); assert.equal(at('one').project2,null); assert.equal(at('one').status,'placed');
+    assert.equal(r.summary.minorStudents,4); assert.equal(errors(r).length,0);
+  }
+});
+test('Not-sure students who checked the same number of running Minors go sophomores first, then juniors, then seniors',()=>{
+  const {projects,cfg,fixed}=minorRun(),unsure=grade=>s('g'+grade,{grade,preference:'Not sure',choices:['m1','m2']});
+  let r=E.sort([...fixed,unsure(12),unsure(10)],projects,cfg,{}),at=id=>r.assignments.find(a=>a.studentId===id);
+  assert.ok(at('g10').project2); assert.equal(at('g12').project2,null);
+  r=E.sort([...fixed,unsure(12),unsure(11)],projects,cfg,{});
+  assert.ok(at('g11').project2); assert.equal(at('g12').project2,null);
+});
+test('Minor-preference students are always in Minors, whatever they checked',()=>{
+  const {projects,cfg,fixed}=minorRun();
+  const r=E.sort([...fixed,s('pref4',{preference:'Minor',choices:[]}),s('four',{preference:'Not sure',choices:['m1','m2','m3','m4']})],projects,cfg,{});
+  for(const id of ['pref1','pref2','pref3','pref4'])assert.ok(r.assignments.find(a=>a.studentId===id).project2,id);
+  assert.equal(r.assignments.find(a=>a.studentId==='four').project2,null);
+});
+test('Major-preference students move to Minors only up to the Minor minimum, and each move is flagged',()=>{
+  const projects=[p('a'),p('m1','Minor'),p('m2','Minor')],cfg=config({projectCount:3,minorProjects:2,minorMin:2,minorTarget:3,minorMax:3});
+  const r=E.sort([s('pref',{preference:'Minor'}),s('soph',{grade:10}),s('junior',{grade:11}),s('senior',{grade:12})],projects,cfg,{}),at=id=>r.assignments.find(a=>a.studentId===id);
+  assert.equal(r.summary.minorStudents,2); assert.ok(at('soph').project2);
+  assert.ok(at('soph').flags.includes('This student asked for a Major but received Minors to reach the Minor student minimum.'));
+  assert.equal(at('junior').project2,null); assert.equal(at('senior').project2,null);
+});

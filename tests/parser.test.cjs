@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const parser = require('../core/parser.js');
+const engine = require('../core/engine.js');
 const headers = ['Timestamp','Email Address','Name','Previous projects','UN goals','Types','Preference','Projects selected','Comments'];
 const projects = [
   {id:'robotics',name:'Robotics',length:'Major',types:['hands','head'],goals:['9'],aliases:[],enabled:true},
@@ -27,17 +28,123 @@ test('latest timestamp wins for same identity; old exclusion cannot vanish',()=>
   assert.equal(result.students[0].status,'trip'); assert.deepEqual(result.students[0].choices,['stem-app-building']);
   assert.equal(result.students[0].source.row,3);
 });
-test('different people sharing email both survive in review',()=>{
-  const a=row(), b=row('avery@example.org','Example, Jordan');
+const sharedFlag='Two students sent their forms from the same email. Check that both answers are right.';
+const smallRun={...engine.defaults,minSize:1,targetSize:2,maxSize:3,projectCount:1,minorProjects:0,minorMin:0,minorTarget:0,minorMax:0};
+test('two students on one email are both placed with their own IDs and a warning',()=>{
+  const a=row('shared@example.org','Example, Avery'), b=row('shared@example.org','Sample, Jordan','2026-10-02T12:00:00Z');
   const result=parser.prepare([table([a,b])],projects);
   assert.equal(result.students.length,2); assert.equal(result.stats.droppedDuplicates,0);
-  assert.equal(new Set(result.students.map(s=>s.id)).size,2);
-  assert.ok(result.students.every(s=>s.status==='review'));
+  assert.deepEqual(result.students.map(s=>s.id).sort(),['shared@example.org:example-avery','shared@example.org:sample-jordan']);
+  assert.ok(result.students.every(s=>s.status==='eligible' && s.issues.includes(sharedFlag)));
+  const shared=result.issues.filter(i=>i.code==='SHARED_EMAIL');
+  assert.deepEqual(shared.map(i=>i.severity),['warning','warning']); assert.deepEqual(shared.map(i=>i.studentId).sort(),result.students.map(s=>s.id).sort());
+  assert.ok(!result.issues.some(i=>i.severity==='error'));
+  const run=engine.sort(result.students,projects,smallRun,{});
+  assert.deepEqual(run.assignments.map(x=>x.status),['placed','placed']);
+  assert.deepEqual(parser.prepare([table([a,b])],projects),result);
 });
-test('non-email trip labels never deduplicate people; green missing email stays review',()=>{
+test('the same student sending the form twice keeps only the newest response',()=>{
+  const older=row('twice@example.org','Example, Casey'), newer=row('twice@example.org','Example, Casey','2026-10-04T12:00:00Z'); newer[7]='App Building';
+  const result=parser.prepare([table([newer,older])],projects);
+  assert.equal(result.students.length,1); assert.equal(result.students[0].id,'twice@example.org');
+  assert.deepEqual(result.students[0].choices,['stem-app-building']); assert.equal(result.stats.droppedDuplicates,1);
+  assert.ok(!result.issues.some(i=>i.code==='SHARED_EMAIL'||i.severity!=='info'));
+  // "Last, First" one time and "First Last" the next is still one student.
+  const flipped=parser.prepare([table([row('flip@example.org','Example, Casey'),row('flip@example.org','Casey Example','2026-10-02T12:00:00Z')])],projects);
+  assert.equal(flipped.students.length,1); assert.equal(flipped.students[0].name,'Casey Example');
+  // A shortened first name is the same student, but the changed spelling is a warning.
+  const renamed=parser.prepare([table([row('nick@example.org','Doe, Nick'),row('nick@example.org','Doe, Nicholas','2026-10-02T12:00:00Z')])],projects);
+  assert.equal(renamed.students.length,1); assert.equal(renamed.students[0].name,'Doe, Nicholas');
+  assert.ok(renamed.issues.some(i=>i.code==='DUPLICATE_SUBMISSION'&&i.severity==='warning'));
+});
+test('the same name and email in two grades stays in review',()=>{
+  const result=parser.prepare([table([row('two-grades@example.org','Example, Rowan')],12),table([row('two-grades@example.org','Example, Rowan')],11)],projects);
+  assert.equal(result.students.length,2); assert.ok(result.students.every(s=>s.status==='review'));
+  assert.ok(result.issues.some(i=>i.code==='IDENTITY_CONFLICT'));
+});
+test('a shared email gender row is not guessed for either student; a Student ID row is used',()=>{
+  const t=table([row('shared@example.org','Example, Avery'),row('shared@example.org','Sample, Jordan','2026-10-02T12:00:00Z')]);
+  let result=parser.prepare([t],projects,{genders:[{email:'shared@example.org',gender:'Group A'}]});
+  assert.ok(result.students.every(s=>s.gender===null)); assert.equal(result.issues.filter(i=>i.code==='GENDER_SHARED_EMAIL').length,2);
+  result=parser.prepare([t],projects,{genders:[{email:'shared@example.org:sample-jordan',gender:'Group B'}]});
+  assert.equal(result.students.find(s=>s.name==='Sample, Jordan').gender,'group b'); assert.equal(result.students.find(s=>s.name==='Example, Avery').gender,null);
+  result=parser.prepare([t],projects,{statusChanges:[{email:'shared@example.org:example-avery',status:'trip',why:'Confirmed trip list'}]});
+  assert.equal(result.students.find(s=>s.name==='Example, Avery').status,'trip');
+});
+test('non-email trip labels never deduplicate people; an unmatched green row is late',()=>{
   const a=row('Trip label','Example, One',''), b=row('Trip label','Example, Two',''), c=row('','Example, Three','');
   const result=parser.prepare([table([a,b,c],11,{0:'#00ffff',1:'FF00FFFF',2:'#00ff00'})],projects);
-  assert.equal(result.students.length,3); assert.equal(result.stats.byStatus.trip,2); assert.equal(result.stats.byStatus.review,1);
+  assert.equal(result.students.length,3); assert.equal(result.stats.byStatus.trip,2); assert.equal(result.stats.byStatus.late,1);
+});
+const typed=name=>['','',name,'','','','','',''];
+test('hand-typed rows merge into the one form in their grade with a matching name',()=>{
+  const result=parser.prepare([table([row('jo@example.org','Jo Smith'),row('nick@example.org','Nicholas Doe'),typed('Smith, Jo'),typed('Doe, Nick')])],projects);
+  assert.deepEqual(result.students.map(s=>s.id).sort(),['jo@example.org','nick@example.org']); assert.equal(result.stats.mergedRows,2);
+  assert.ok(result.students.every(s=>s.status==='eligible' && !s.issues.some(x=>/hand-typed/.test(x))));
+  const merges=result.issues.filter(i=>i.code==='HAND_TYPED_MERGED');
+  assert.deepEqual(merges.map(i=>i.studentId).sort(),['jo@example.org','nick@example.org']); assert.ok(merges.every(i=>i.severity==='info'));
+  // Odd spacing and capitals still match.
+  assert.equal(parser.prepare([table([row('jo@example.org','Jo Smith'),typed('  SMITH ,jo ')])],projects).students.length,1);
+});
+test('a hand-typed status color wins over the form it merges into',()=>{
+  const trip=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo')],12,{1:'#00ffff'})],projects);
+  assert.equal(trip.students.length,1); assert.equal(trip.students[0].status,'trip');
+  const green=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo')],12,{1:'#00ff00'})],projects);
+  assert.equal(green.students[0].status,'late'); assert.match(green.issues.find(i=>i.code==='HAND_TYPED_MERGED').message,/green color was used/);
+  const plain=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo')],12,{0:'#ff9900'})],projects);
+  assert.equal(plain.students[0].status,'leader');
+});
+test('a hand-typed row matching only one last name in its grade merges with a flag',()=>{
+  const result=parser.prepare([table([row('chris@example.org','Lee, Chris'),row('jo@example.org','Jo Smith'),typed('Lee, Pat')],12),table([row('morgan@example.org','Lee, Morgan')],11)],projects);
+  assert.equal(result.students.length,3); assert.equal(result.stats.mergedRows,1);
+  assert.ok(result.students.find(s=>s.id==='chris@example.org').issues.includes('Matched a hand-typed row by last name only. Check it\'s the same student.'));
+  assert.ok(result.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME' && i.severity==='warning' && i.studentId==='chris@example.org'));
+});
+test('a trip or leader hand-typed row merges only by full name, never by last name alone',()=>{
+  for (const [color,status] of [['#00ffff','trip'],['#ff9900','leader']]) {
+    // One form shares the last name: Ana stays her own excluded row and Ben is still placed.
+    const one=parser.prepare([table([row('ben@example.org','Rivera, Ben'),typed('Rivera, Ana')],12,{1:color})],projects);
+    const ana=one.students.find(s=>s.name==='Rivera, Ana'), ben=one.students.find(s=>s.name==='Rivera, Ben');
+    assert.equal(one.students.length,2); assert.equal(one.stats.mergedRows,0);
+    assert.equal(ana.status,status); assert.equal(ben.status,'eligible'); assert.ok(!ben.issues.some(x=>/hand-typed/.test(x)));
+    assert.ok(!one.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME'));
+    const run=engine.sort(one.students,projects,smallRun,{});
+    assert.equal(run.assignments.find(a=>a.studentId===ben.id).status,'placed'); assert.equal(run.assignments.find(a=>a.studentId===ana.id).status,'excluded');
+    // Two forms share the last name: Alex stays excluded instead of going to review.
+    const two=parser.prepare([table([row('sam@example.org','Kim, Sam'),row('jordan@example.org','Jordan Kim'),typed('Kim, Alex')],12,{2:color})],projects);
+    assert.equal(two.students.find(s=>s.name==='Kim, Alex').status,status);
+    assert.equal(two.students.filter(s=>s.email && s.status==='eligible').length,2);
+    assert.ok(!two.issues.some(i=>i.code==='HAND_TYPED_UNCLEAR'));
+  }
+  // A green row still merges by last name alone, with the flag.
+  const green=parser.prepare([table([row('phil@example.org','Lee, Phil'),typed('Lee, Pat')],12,{1:'#00ff00'})],projects);
+  assert.equal(green.students.length,1); assert.equal(green.students[0].status,'late');
+  assert.ok(green.students[0].issues.includes('Matched a hand-typed row by last name only. Check it\'s the same student.'));
+  assert.ok(green.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME' && i.severity==='warning'));
+});
+test('unmatched hand-typed rows become late with a flag, while trip colors stay trips',()=>{
+  const result=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Example, Quinn'),typed('Example, Blue')],12,{2:'#00ffff'})],projects);
+  const quinn=result.students.find(s=>s.name==='Example, Quinn'), blue=result.students.find(s=>s.name==='Example, Blue');
+  assert.equal(quinn.status,'late'); assert.deepEqual(quinn.issues,['No response: check.']);
+  assert.equal(blue.status,'trip'); assert.deepEqual(blue.issues,[]);
+  assert.ok(result.issues.some(i=>i.code==='NO_RESPONSE' && i.severity==='warning' && i.studentId===quinn.id));
+  assert.ok(result.issues.some(i=>i.code==='NO_RESPONSE' && i.severity==='info' && i.studentId===blue.id));
+  const run=engine.sort(result.students,projects,smallRun,{}), at=id=>run.assignments.find(a=>a.studentId===id);
+  assert.equal(at(quinn.id).status,'placed'); assert.ok(at(quinn.id).flags.some(x=>/after everyone else/.test(x)));
+  assert.equal(at(blue.id).status,'excluded');
+});
+test('a hand-typed row that could be more than one student goes to review',()=>{
+  const result=parser.prepare([table([row('sam@example.org','Kim, Sam'),row('samuel@example.org','Samuel Kim'),typed('Kim, Sam'),typed('Kim, Pat')])],projects);
+  assert.equal(result.students.length,4); assert.equal(result.stats.mergedRows,0);
+  for (const name of ['Kim, Sam','Kim, Pat']) {
+    const s=result.students.find(x=>!x.email && x.name===name);
+    assert.equal(s.status,'review'); assert.deepEqual(s.issues,['More than one student matches this name.']);
+  }
+  assert.equal(result.students.filter(s=>s.email && s.status==='eligible').length,2);
+  assert.equal(result.issues.filter(i=>i.code==='HAND_TYPED_UNCLEAR').length,2);
+  // Two hand-typed rows that both match one form are not merged either.
+  const twice=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo'),typed('Smith, Joanna')])],projects);
+  assert.equal(twice.students.length,3); assert.equal(twice.students.filter(s=>s.status==='review').length,2);
 });
 test('header matching handles reordered senior comments, choice blocks and leader text',()=>{
   const h=['Email Address','Timestamp','What is your Name? Please answer Last name, First name','Please choose the TYPE of Project you want','Would you prefer to do a MAJOR Project (2 weeks) or two MINOR Projects?','Please choose a UN Sustainable Development Goals','Would you like to be considered to serve as a student leader for Stories Matter?','Below are new Projects. Check ALL the Projects that you might be interested in joining.','Please share anything else you would like me to know','What Project(s) were you in last year?'];
@@ -45,16 +152,32 @@ test('header matching handles reordered senior comments, choice blocks and leade
   const result=parser.prepare([{name:'Senior',values}],projects).students[0];
   assert.equal(result.status,'eligible'); assert.equal(result.preference,'Minor'); assert.deepEqual(result.choices,['robotics']); assert.equal(result.comments,values[1][8]);
 });
-test('missing Sophomore prior question warns without blocking all students',()=>{
-  const t=table([row()],10); t.values=t.values.map(r=>r.filter((_,i)=>i!==3)); t.backgrounds=t.backgrounds.map(r=>r.filter((_,i)=>i!==3));
-  const result=parser.prepare([t],projects); assert.equal(result.students[0].status,'eligible'); assert.equal(result.students[0].previousKnown,false); assert.ok(result.issues.some(i=>i.code==='PREVIOUS_UNAVAILABLE'));
+test('missing Sophomore prior question is one PP Input check line, not a flag on every sophomore',()=>{
+  const t=table([row(),row('second@example.org','Example, Second')],10); t.values=t.values.map(r=>r.filter((_,i)=>i!==3)); t.backgrounds=t.backgrounds.map(r=>r.filter((_,i)=>i!==3));
+  const result=parser.prepare([t],projects);
+  assert.ok(result.students.every(s=>s.status==='eligible' && s.previousKnown && !s.issues.some(x=>/last year|previous/i.test(x))));
+  assert.equal(result.issues.filter(i=>i.code==='PREVIOUS_UNAVAILABLE').length,1);
+  const run=engine.sort(result.students,projects,smallRun,{});
+  assert.ok(run.assignments.every(a=>a.status==='placed' && !a.flags.some(x=>/past project/i.test(x))));
+  assert.ok(!run.checks.some(c=>c.code==='PREVIOUS_UNAVAILABLE'));
 });
-test('known prior aliases exclude current combined project; unknown substantive prior stays review',()=>{
+test('known prior aliases exclude current combined project; an unreadable last-year answer keeps the student eligible with a flag',()=>{
   const a=row(); a[3]='Healthy Minds, Healthy Bodies';
-  const b=row('unknown@example.org','Example, Unknown'); b[3]='A mystery workshop';
-  const result=parser.prepare([table([a,b])],projects);
+  const b=row('unknown@example.org','Example, Unknown'); b[3]='A mystery workshop.';
+  const result=parser.prepare([table([a,b])],projects), unknown=result.students.find(s=>s.email===b[1]);
   assert.deepEqual(result.students.find(s=>s.email===a[1]).previous,['fueling-the-body-healthy-bodies']);
-  assert.equal(result.students.find(s=>s.email===b[1]).status,'review');
+  assert.equal(unknown.status,'eligible'); assert.deepEqual(unknown.previous,[]);
+  assert.ok(unknown.issues.includes('Couldn\'t match last year\'s project: A mystery workshop.'));
+  assert.equal(engine.sort([unknown],projects,smallRun,{}).assignments[0].status,'placed');
+});
+test('a readable part of last year\'s answer still blocks that project',()=>{
+  const r=row('repeat@example.org','Example, Repeat'); r[3]='Robotics, A mystery workshop'; r[7]='Robotics, App Building';
+  const student=parser.prepare([table([r])],projects).students[0];
+  assert.equal(student.status,'eligible'); assert.deepEqual(student.previous,['robotics']);
+  assert.ok(student.issues.includes('Couldn\'t match last year\'s project: Robotics, A mystery workshop.'));
+  const run=engine.sort([student],projects,{...smallRun,projectCount:2},{});
+  assert.equal(run.assignments[0].status,'placed'); assert.equal(run.assignments[0].project1,'stem-app-building');
+  assert.ok(engine.check([student],[{...projects[0],finalLength:'Major'}],[{studentId:student.id,status:'placed',project1:'robotics',project2:null,fit1:1,fit2:null}],smallRun,{}).some(c=>c.code==='PREVIOUS_PROJECT'));
 });
 test('retired prior titles recognized without guessing renamed equivalents',()=>{
   const previous=parser.parsePrevious('Criminal Justice, Robotics',projects);
@@ -71,11 +194,12 @@ test('gender only from supplied map; conflicting values remain unknown',()=>{
   const result=parser.prepare([table([r])],projects,{genders:[{email:r[1],gender:'Group A'},{email:r[1],gender:'Group B'}]});
   assert.equal(result.students[0].gender,null); assert.ok(result.issues.some(i=>i.code==='CONFLICTING_GENDER'));
 });
-test('status override cannot bypass an unresolved prior project or required preference',()=>{
+test('status override cannot bypass a required preference, and an unread prior project needs no override',()=>{
   const a=row(); a[3]='Unrecognized historical project';
   const b=row('missing-pref@example.org','Example, Missing Preference'); b[6]='';
   const result=parser.prepare([table([a,b])],projects,{statusChanges:[{email:a[1],status:'eligible',why:'Move from review'},{email:b[1],status:'late',why:'Move from review'}]});
-  assert.ok(result.students.every(s=>s.status==='review')); assert.equal(result.issues.filter(i=>i.code==='UNRESOLVED_RESPONSE').length,2);
+  assert.equal(result.students.find(s=>s.email===a[1]).status,'eligible'); assert.equal(result.students.find(s=>s.email===b[1]).status,'review');
+  assert.equal(result.issues.filter(i=>i.code==='UNRESOLVED_RESPONSE').length,1);
 });
 test('explicit no-prior answers and supplied gender capitalization normalize consistently',()=>{
   const a=row(); a[3]='I did not participate in Project: Pomfret';

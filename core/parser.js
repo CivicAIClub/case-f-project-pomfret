@@ -71,6 +71,30 @@ var PPParser = (function () {
     var email = text(value).toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
   }
+  /* Names arrive as "Last, First" or "First Last" with any spacing or capitals.
+   * Without a comma the first word is the first name and the last name is one or
+   * more of the final words, so "Jo Ann Smith" can match "Smith, Jo" or "Ann Smith, Jo". */
+  function nameParts(value) {
+    var raw = text(value), comma = raw.indexOf(','), words = normalize(raw).split(' ').filter(Boolean);
+    if (comma >= 0) {
+      var last = normalize(raw.slice(0, comma));
+      return {words:words, first:normalize(raw.slice(comma + 1)).split(' ')[0], lasts:last ? [last] : []};
+    }
+    if (words.length < 2) return {words:words, first:'', lasts:words};
+    return {words:words, first:words[0], lasts:words.slice(1).map(function (_, i) { return words.slice(i + 1).join(' '); })};
+  }
+  function sameLastName(a, b) { return a.lasts.some(function (last) { return b.lasts.indexOf(last) >= 0; }); }
+  // The same first name, or one that starts with the other's first three letters (Nick and Nicholas).
+  function sameFirstName(a, b) {
+    if (!a.first || !b.first) return false;
+    return a.first === b.first || a.first.indexOf(b.first.slice(0, 3)) === 0 || b.first.indexOf(a.first.slice(0, 3)) === 0;
+  }
+  function sameName(a, b) {
+    var x = nameParts(a), y = nameParts(b);
+    if (x.words.length && x.words.slice().sort().join(' ') === y.words.slice().sort().join(' ')) return true;
+    return sameLastName(x, y) && sameFirstName(x, y);
+  }
+  function nameSpelling(value) { return nameParts(value).words.slice().sort().join(' '); }
   function timestamp(value) {
     if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
     if (typeof value === 'number' && Number.isFinite(value)) return value > 100000000000 ? value : Math.round((value - 25569) * 86400000);
@@ -154,16 +178,17 @@ var PPParser = (function () {
     if (/soph/.test(n)) return 10;
     throw new Error('Specify grade 10, 11 or 12 for ' + text(table.name) + '.');
   }
-  function issue(code, severity, message, source) {
+  function issue(code, severity, message, source, studentId) {
     var value = {code:code, severity:severity, message:message};
     if (source) value.source = source;
+    if (studentId) value.studentId = studentId;
     return value;
   }
   function prepare(tables, projects, options) {
     options = options || {};
     if (!Array.isArray(tables) || !tables.length) throw new Error('No grade source tables were supplied.');
     if (!Array.isArray(projects) || !projects.length) throw new Error('No projects were supplied.');
-    var rows = [], issues = [], stats = {rawRows:0, students:0, droppedDuplicates:0, byGrade:{}, byStatus:{}, identityConflicts:0};
+    var rows = [], issues = [], stats = {rawRows:0, students:0, droppedDuplicates:0, mergedRows:0, byGrade:{}, byStatus:{}, identityConflicts:0};
     tables.forEach(function (table) {
       if (!table.values || !Array.isArray(table.values[0])) throw new Error('Missing header row in ' + text(table.name) + '.');
       var c;
@@ -192,52 +217,119 @@ var PPParser = (function () {
         var selected = unique([].concat.apply([], c.choices.map(function (i) { return matchingProjects(row[i], projects, true); })));
         if (!selected.length) problems.push('No current running project was checked.');
         else if (selected.length === 1) problems.push('Only one current project was checked; there is no priority bonus for a narrow choice.');
-        var previous = c.previous >= 0 ? parsePrevious(row[c.previous], projects) : {ids:[],known:false,unresolved:false,retired:[]};
-        if (!previous.known) problems.push(c.previous < 0 ? 'Previous-project question was not supplied.' : 'Previous projects are missing or contain an unrecognized title.');
-        if (previous.unresolved && status !== 'trip' && status !== 'leader') status = 'review';
+        // Last year's answer never blocks a student. Projects it names still count as repeats and
+        // anything else is flagged. A grade whose form doesn't ask gets one PP Input check line above.
+        var answer = c.previous >= 0 ? text(row[c.previous]) : '', previous = parsePrevious(answer, projects);
+        if (c.previous >= 0 && !answer) problems.push('No answer about last year\'s project.');
+        if (previous.unresolved) problems.push('Couldn\'t match last year\'s project: ' + answer.replace(/\s+/g, ' ').replace(/[.\s]+$/, '') + '.');
         if (previous.retired.length) problems.push('Historical project not on current list; no renamed-project equivalence was assumed.');
         rows.push({
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
-          previousKnown:previous.known, status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
+          previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
-          _blocked:identityInvalid || !pref || previous.unresolved || (parsedTime === null && !COLORS[colorOf(fill)]),
+          _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
         });
       });
     });
     var byEmail = {}, kept = [];
     rows.forEach(function (s) { if (!s.email) kept.push(s); else (byEmail[s.email] || (byEmail[s.email] = [])).push(s); });
-    Object.keys(byEmail).sort().forEach(function (email) {
-      var group = byEmail[email], identities = unique(group.map(function (s) { return s.grade + ':' + s._nameKey; }));
-      if (identities.length > 1) {
-        group.forEach(function (s) { s.id += ':' + slug(s.source.sheet) + ':' + s.source.row; s.status = 'review'; s._invalid = true; s.issues.push('Email is shared by different names or grades; do not merge these identities.'); kept.push(s); });
-        stats.identityConflicts += group.length;
-        issues.push(issue('IDENTITY_CONFLICT', 'error', 'One email identifies different names or grades. All affected rows are in review.', group[0].source));
-        return;
+    function newestFirst(a, b) { return b._time - a._time || b.source.row - a.source.row || a.source.sheet.localeCompare(b.source.sheet); }
+    // One student's repeated forms: the newest wins, and a trip or leader color on any of them is kept.
+    function keepNewest(person) {
+      person.sort(newestFirst);
+      var winner = person[0], exclusions = unique(person.map(function (s) { return s._colorStatus; }).filter(function (s) { return s === 'trip' || s === 'leader'; }));
+      if (exclusions.length === 1) winner.status = exclusions[0];
+      if (exclusions.length > 1) { winner.status = 'review'; winner.issues.push('Duplicate submissions disagree on trip/freshman-leader exclusion.'); }
+      if (person.length > 1) {
+        stats.droppedDuplicates += person.length - 1;
+        winner.issues.push('Latest timestamped submission retained; ' + (person.length - 1) + ' older submission(s) removed.');
+        if (unique(person.map(function (s) { return nameSpelling(s.name); })).length > 1) {
+          winner.issues.push('An older form from this email gave the name differently. Check it\'s the same student.');
+          issues.push(issue('DUPLICATE_SUBMISSION', 'warning', 'Kept the newest form from one email. An older form gave the name differently, so check it\'s the same student.', winner.source));
+        } else issues.push(issue('DUPLICATE_SUBMISSION', 'info', 'Older timestamped submission removed; latest retained.', winner.source));
       }
+      return winner;
+    }
+    Object.keys(byEmail).sort().forEach(function (email) {
+      var group = byEmail[email], people = [], students = [];
       // Only valid timestamped submissions are duplicate form submissions. Typed roster rows survive.
       var submissions = group.filter(function (s) { return s._time !== null; }), typed = group.filter(function (s) { return s._time === null; });
-      submissions.sort(function (a,b) { return b._time - a._time || b.source.row - a.source.row || a.source.sheet.localeCompare(b.source.sheet); });
-      if (submissions.length) {
-        var winner = submissions[0], exclusions = unique(submissions.map(function (s) { return s._colorStatus; }).filter(function (s) { return s === 'trip' || s === 'leader'; }));
-        if (exclusions.length === 1) winner.status = exclusions[0];
-        if (exclusions.length > 1) { winner.status = 'review'; winner.issues.push('Duplicate submissions disagree on trip/freshman-leader exclusion.'); }
-        if (submissions.length > 1) {
-          stats.droppedDuplicates += submissions.length - 1;
-          winner.issues.push('Latest timestamped submission retained; ' + (submissions.length - 1) + ' older submission(s) removed.');
-          issues.push(issue('DUPLICATE_SUBMISSION', 'info', 'Older timestamped submission removed; latest retained.', winner.source));
+      var named = submissions.filter(function (s) { return s._nameKey; }), nameless = submissions.filter(function (s) { return !s._nameKey; });
+      // Forms whose names match are one student. Clearly different names are different students.
+      named.forEach(function (s) {
+        var person = people.filter(function (p) { return p.some(function (other) { return sameName(s.name, other.name); }); })[0];
+        if (person) person.push(s); else people.push([s]);
+      });
+      if (!people.length && nameless.length) people.push(nameless);
+      else nameless.forEach(function (s) { s.id += ':' + slug(s.source.sheet) + ':' + s.source.row; kept.push(s); });
+      people.forEach(function (person) {
+        if (unique(person.map(function (s) { return s.grade; })).length > 1) {
+          person.forEach(function (s) { s.id += ':' + slug(s.source.sheet) + ':' + s.source.row; s.status = 'review'; s._invalid = true; s.issues.push('The same name and email appear in more than one grade. Check which grade is right.'); students.push(s); });
+          stats.identityConflicts += person.length;
+          issues.push(issue('IDENTITY_CONFLICT', 'error', 'One student\'s name and email appear in more than one grade. These rows are in review.', person[0].source));
+          return;
         }
-        kept.push(winner);
+        var winner = keepNewest(person);
+        // The email alone no longer identifies the student, so the ID adds the name.
+        if (people.length > 1) winner.id = email + ':' + slug(normalize(winner.name));
+        students.push(winner);
+      });
+      if (people.length > 1) {
+        var flag = people.length === 2 ? 'Two students sent their forms from the same email. Check that both answers are right.' : people.length + ' students sent their forms from the same email. Check that every answer is right.';
+        students.forEach(function (s) { s._sharedEmail = true; s.issues.push(flag); issues.push(issue('SHARED_EMAIL', 'warning', flag, s.source, s.id)); });
       }
+      students.forEach(function (s) { kept.push(s); });
       typed.forEach(function (s) {
         if (submissions.length || typed.length > 1) { s.id += ':roster:' + slug(s.source.sheet) + ':' + s.source.row; s.issues.push('Roster entry shares an email with another row; reconcile before sorting.'); s._invalid = true; if (s.status !== 'trip' && s.status !== 'leader') s.status = 'review'; }
         kept.push(s);
       });
-      if (submissions.length && typed.length) { submissions[0].status = 'review'; submissions[0]._invalid = true; submissions[0].issues.push('A typed roster entry shares this email; reconcile the duplicate person before sorting.'); }
+      var latest = submissions.slice().sort(newestFirst)[0];
+      if (latest && typed.length) { latest.status = 'review'; latest._invalid = true; latest.issues.push('A typed roster entry shares this email; reconcile the duplicate person before sorting.'); }
+    });
+    // Hand-typed rows have a name but no email or timestamp. Each one joins the one form
+    // in its grade with a matching name, or the last name alone if only one form has it.
+    // A trip or leader row needs the full name: a shared last name would turn a student
+    // who filled out the form into a trip or leader.
+    var responses = kept.filter(function (s) { return s.email && s._time !== null; });
+    var handTyped = kept.filter(function (s) { return !s.email && s._time === null && s._nameKey; }).map(function (row) {
+      var sameGrade = responses.filter(function (s) { return s.grade === row.grade; });
+      var full = sameGrade.filter(function (s) { return sameName(row.name, s.name); });
+      var excluded = row._colorStatus === 'trip' || row._colorStatus === 'leader';
+      var lastOnly = full.length || excluded ? [] : sameGrade.filter(function (s) { return sameLastName(nameParts(row.name), nameParts(s.name)); });
+      return {row:row, candidates:full.length ? full : lastOnly, lastOnly:!full.length};
+    });
+    var colorWords = {trip:'trip', leader:'freshman leader', late:'green'};
+    handTyped.forEach(function (match) {
+      var row = match.row, target = match.candidates.length === 1 ? match.candidates[0] : null, color = row._colorStatus;
+      var rivals = handTyped.filter(function (other) { return target && other.candidates.length === 1 && other.candidates[0] === target; }).length;
+      if (match.candidates.length > 1 || rivals > 1) {
+        // Never guess between students. A person decides.
+        row.status = 'review';
+        row.issues = [match.candidates.length > 1 ? 'More than one student matches this name.' : 'Another hand-typed row matches the same form. Check which student this is.'];
+        issues.push(issue('HAND_TYPED_UNCLEAR', 'warning', 'The hand-typed row "' + row.name + '" could be more than one student, so it is in review.', row.source, row.id));
+      } else if (target) {
+        // The row's status color wins. A form still missing required answers stays in review.
+        if (color && !(color === 'late' && target.status === 'review')) target.status = color;
+        if (match.lastOnly) target.issues.push('Matched a hand-typed row by last name only. Check it\'s the same student.');
+        kept.splice(kept.indexOf(row), 1);
+        stats.mergedRows++;
+        issues.push(issue(match.lastOnly ? 'HAND_TYPED_LAST_NAME' : 'HAND_TYPED_MERGED', match.lastOnly ? 'warning' : 'info',
+          'Merged the hand-typed row "' + row.name + '" into the form from "' + target.name + '"' + (match.lastOnly ? ' by last name only. Check it\'s the same student.' : '.') + (color ? ' Its ' + colorWords[color] + ' color was used.' : ''), row.source, target.id));
+      } else if (row.status === 'trip' || row.status === 'leader') {
+        row.issues = [];
+        issues.push(issue('NO_RESPONSE', 'info', 'No form from "' + row.name + '". Kept as ' + colorWords[row.status] + ' and not placed.', row.source, row.id));
+      } else {
+        // The student did not fill out the form. Place them after everyone else.
+        row.status = 'late';
+        row.issues = ['No response: check.'];
+        issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
+      }
     });
     var genders = {};
     (options.genders || []).forEach(function (g) {
+      // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
       var email = emailOf(g.email), gender = text(g.gender).toLowerCase().replace(/\s+/g, ' ');
       if (!email || !gender) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email and a supplied gender.')); return; }
       if (!genders[email]) genders[email] = [];
@@ -247,7 +339,7 @@ var PPParser = (function () {
     statusChanges.forEach(function (change) {
       var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
       if (STATUS.indexOf(status) < 0 || !why || (!email && !name)) { issues.push(issue('INVALID_STATUS_CHANGE', 'error', 'Status change requires a valid status, a reason, and an email or exact name.')); return; }
-      var matches = kept.filter(function (s) { return (!email || s.email === email) && (!name || s._nameKey === name); });
+      var matches = kept.filter(function (s) { return (!email || s.email === email || s.id === email) && (!name || s._nameKey === name); });
       if (matches.length !== 1) { issues.push(issue('AMBIGUOUS_STATUS_CHANGE', 'error', 'Status change did not identify exactly one student.')); return; }
       var target = matches[0];
       if (target._invalid && (status === 'eligible' || status === 'late')) { issues.push(issue('UNRESOLVED_IDENTITY', 'error', 'A status change cannot resolve a missing or conflicting identity.', target.source)); return; }
@@ -256,10 +348,12 @@ var PPParser = (function () {
       target.issues.push('Status changed: ' + why);
     });
     kept.forEach(function (s) {
-      var values = unique(genders[s.email] || []);
+      // A shared email's Gender row cannot tell its students apart; a row with the Student ID can.
+      var values = unique(genders[s.id] || (s._sharedEmail ? [] : genders[s.email]) || []);
+      if (s._sharedEmail && !genders[s.id] && genders[s.email]) issues.push(issue('GENDER_SHARED_EMAIL', 'warning', 'Gender was not used for this student because another student sent a form from the same email. Add a Gender row with this Student ID instead.', s.source, s.id));
       if (values.length === 1) s.gender = values[0];
       if (values.length > 1) { s.issues.push('Conflicting supplied gender values; gender remains unknown.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
-      delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus;
+      delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus; delete s._sharedEmail;
       stats.byGrade[s.grade] = (stats.byGrade[s.grade] || 0) + 1;
       stats.byStatus[s.status] = (stats.byStatus[s.status] || 0) + 1;
     });
@@ -295,6 +389,6 @@ var PPParser = (function () {
     });
     return {projects:projects,issues:issues};
   }
-  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious};
+  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious,sameName:sameName};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPParser;
