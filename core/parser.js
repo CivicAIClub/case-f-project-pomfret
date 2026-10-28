@@ -326,7 +326,7 @@ var PPParser = (function () {
     });
     var genders = {};
     (options.genders || []).forEach(function (g) {
-      // The Email column also takes a Student ID such as name@school.org:last-first, for students who share an email.
+      // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
       var email = emailOf(g.email), gender = text(g.gender).toLowerCase().replace(/\s+/g, ' ');
       if (!email || !gender) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email and a supplied gender.')); return; }
       if (!genders[email]) genders[email] = [];
