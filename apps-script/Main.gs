@@ -352,6 +352,34 @@ var PPAdapter = (function () {
     if (t) rows.push(['Students whose Major or Minor answer and checks disagree', t.disagree + ' (followChecksOverTrack is ' + (t.followChecks ? 'on' : 'off') + ')']);
     return rows;
   }
+  // A group over this size is flagged in PP Projects unless its project has a Max size, which
+  // Mr. Litowitz sets on purpose. It is the top of the preferred group size.
+  var PREFERRED_MOST = 12;
+  // One row per running project, Majors then Minors, each by name. A Minor's counts read
+  // "week 1 / week 2". Picked it counts the students in the group who checked the project.
+  function writeProjectsOverview(students, result, info, config, decisions) {
+    var byId = {}, minimum = (config || PPEngine.defaults).minSize;
+    students.forEach(function (s) { byId[s.id] = s; });
+    var projects = result.projects.slice().sort(function (a, b) { return (a.finalLength === 'Major' ? 0 : 1) - (b.finalLength === 'Major' ? 0 : 1) || a.name.localeCompare(b.name); });
+    var rows = projects.map(function (p, i) {
+      var minor = p.finalLength === 'Minor', sized = decisions && decisions[p.id] && Number.isInteger(decisions[p.id].maxSize), flags = [];
+      var weeks = (minor ? [0, 1] : [0]).map(function (w) {
+        var group = result.assignments.filter(function (a) { return a.status === 'placed' && byId[a.studentId] && (w ? a.project2 : a.project1) === p.id; }).map(function (a) { return byId[a.studentId]; });
+        function count(test) { return group.filter(test).length; }
+        return { size: group.length, male: count(function (s) { return s.gender === 'Male'; }), female: count(function (s) { return s.gender === 'Female'; }), 12: count(function (s) { return s.grade === 12; }), 11: count(function (s) { return s.grade === 11; }), 10: count(function (s) { return s.grade === 10; }), picked: count(function (s) { return (s.choices || []).indexOf(p.id) >= 0; }) };
+      });
+      weeks.forEach(function (c, w) {
+        var when = minor ? ' in week ' + (w + 1) : '';
+        if (!sized && c.size > PREFERRED_MOST) flags.push('Over ' + PREFERRED_MOST + ' students' + when);
+        if (c.size < minimum) flags.push('Under ' + minimum + ' students' + when);
+        if ((c.male && c.male < 3) || (c.female && c.female < 3)) flags.push('Fewer than 3 of one gender' + when);
+      });
+      function both(key) { return minor ? weeks[0][key] + ' / ' + weeks[1][key] : weeks[0][key]; }
+      var where = info[p.id] || { faculty: '', location: '' };
+      return [i + 1, projectToken(p.id, result.projects), where.location, where.faculty, weeks[0].size, minor ? weeks[1].size : weeks[0].size, both('male'), both('female'), both(12), both(11), both(10), both('picked'), flags.join('; ')];
+    });
+    write('PP Projects', ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], rows);
+  }
   // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
   function writeSeniorsToCheck(students, result) {
     var byId = {}; students.forEach(function (s) { byId[s.id] = s; });
@@ -365,10 +393,11 @@ var PPAdapter = (function () {
     write('PP Seniors to check', ['Name', 'Email', 'Project #1', 'Project #2', 'Reason'], rows);
   }
   // Everything that follows from the placements. Check again rebuilds these from the grade tabs.
-  function writeResults(students, result, status) {
+  function writeResults(students, result, status, config, decisions) {
     var studentsById = {}, info = details();
     students.forEach(function (s) { studentsById[s.id] = s; });
     writeMasterList(students, result, info);
+    writeProjectsOverview(students, result, info, config, decisions);
     writeGroupTabs(students, result);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {
@@ -376,9 +405,9 @@ var PPAdapter = (function () {
     }));
     writeSeniorsToCheck(students, result);
   }
-  function output(input, result) {
+  function output(input, result, config, decisions) {
     writeGradeTabs(input.students, result);
-    writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.');
+    writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.', config, decisions);
     writeFriendCheck(result.friends);
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
@@ -402,7 +431,7 @@ var PPAdapter = (function () {
     var context = { previous: last ? Object.keys(last.assignments).map(function (id) { return last.assignments[id]; }) : [], locks: readLocks(), friends: readFriends(config) };
     var result = PPEngine.sort(input.students, input.projects, config, decisions, context);
     snapshot(input, result, config, decisions);
-    output(input, result);
+    output(input, result, config, decisions);
     var allChecks = result.checks.concat(input.issues || [], result.issues || []);
     appendRecord('PP Run log', { 'Time': new Date(), 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': activeUser() });
     result.savedMoves = moves;
@@ -610,7 +639,7 @@ var PPAdapter = (function () {
     // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
     var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current, state.settings, state.choices) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
     if (report) summary.friends = report.summary;
-    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.', state.settings, state.choices);
     if (report) writeFriendCheck(report.rows);
     writeIssues('PP Check', checks);
     checks.savedMoves = moves;

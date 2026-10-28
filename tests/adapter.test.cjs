@@ -711,3 +711,41 @@ test('PP Master list has seniors, juniors and sophomores by last name, with both
   assert.deepEqual(moved.slice(0, 5), [pick.s.name, label(target), 'Faculty of ' + target.name, label(target), 'Faculty of ' + target.name]);
   assert.match(moved[5], /^Moved by hand\. /);
 });
+
+const PROJECTS_HEADER = ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'];
+test('PP Projects has a row per running project with its sizes, genders, grades, how many picked it and plain flags; Check again rebuilds it', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare();
+  // Invented genders: every third student is Female.
+  f.sheets.get('PP Students').data.slice(1).forEach((r, i) => f.sheets.get('Gender').data.push([r[2], i % 3 ? 'Male' : 'Female']));
+  const plain = f.adapter.sort('Find the projects'), majors = plain.projects.filter(p => p.finalLength === 'Major').sort((a, b) => a.name.localeCompare(b.name));
+  const [open, sized] = majors, choices = f.sheets.get('Project choices').data, choice = id => choices.find(r => r[0] === id);
+  choice(sized.id)[7] = 14; choice(open.id)[8] = 'Ms. Rivera, Mr. Chen'; choice(open.id)[9] = 'Room 12';
+  f.adapter.sort('Projects overview');
+  const run = saved(f), tab = () => f.sheets.get('PP Projects').data;
+  assert.deepEqual(tab()[0], PROJECTS_HEADER);
+  const rows = tab().slice(1), order = run.projects.slice().sort((a, b) => (a.finalLength === 'Major' ? 0 : 1) - (b.finalLength === 'Major' ? 0 : 1) || a.name.localeCompare(b.name));
+  assert.deepEqual(rows.map(r => r[1]), order.map(label));
+  assert.deepEqual(rows.map(r => r[0]), order.map((_, i) => i + 1));
+  const students = [...run.students.values()];
+  for (const [i, p] of order.entries()) {
+    const weeks = (p.finalLength === 'Minor' ? [0, 1] : [0]).map(w => [...run.assignments.values()].filter(a => a.status === 'placed' && (w ? a.project2 : a.project1) === p.id).map(a => run.students.get(a.studentId)));
+    const count = test => weeks.map(g => g.filter(test).length), show = test => count(test).join(' / ');
+    const flags = weeks.flatMap((g, w) => {
+      const when = weeks.length === 2 ? ' in week ' + (w + 1) : '', male = g.filter(s => s.gender === 'Male').length, female = g.filter(s => s.gender === 'Female').length;
+      return [...(p.id !== sized.id && g.length > 12 ? ['Over 12 students' + when] : []), ...(g.length < 8 ? ['Under 8 students' + when] : []), ...((male && male < 3) || (female && female < 3) ? ['Fewer than 3 of one gender' + when] : [])];
+    });
+    const sizes = weeks.map(g => g.length);
+    assert.deepEqual(rows[i].slice(4), [sizes[0], sizes[sizes.length - 1], ...[s => s.gender === 'Male', s => s.gender === 'Female', s => s.grade === 12, s => s.grade === 11, s => s.grade === 10, s => s.choices.includes(p.id)].map(t => weeks.length === 2 ? show(t) : count(t)[0]), flags.join('; ')], p.name);
+  }
+  assert.deepEqual(rows.find(r => r[1] === label(open)).slice(2, 4), ['Room 12', 'Ms. Rivera, Mr. Chen']);
+  assert.ok(students.length && rows.some(r => /Fewer than 3 of one gender/.test(r[12])));
+  // Four Minor students moved by hand into each of two Majors: over 12 is flagged only without a Max size.
+  const minors = placedRows(f, run).filter(x => x.a.project2);
+  minors.slice(0, 4).forEach(x => { x.row[2] = x.row[3] = label(open); });
+  minors.slice(4, 8).forEach(x => { x.row[2] = x.row[3] = label(sized); });
+  f.adapter.checkAgain();
+  const after = id => tab().find(r => r[1] === label(run.projects.find(p => p.id === id)));
+  assert.ok(after(open.id)[4] > 12 && after(sized.id)[4] > 12);
+  assert.match(after(open.id)[12], /^Over 12 students/);
+  assert.doesNotMatch(after(sized.id)[12], /Over 12/);
+});
