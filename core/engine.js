@@ -498,18 +498,27 @@ var PPEngine = (function () {
       if(done.third)remark(done.third,'reason','Swapped into this group so classmates who asked to work together could, with no worse fit.');
     });
     // Gender: fix groups that break the rule (no Male students or at least three, and the same for
-    // Female) by swapping students between groups in the same week and track. A swap needs every rule
-    // above to still hold, drops each student at most one step, and never leaves a student in fewer
-    // projects they checked (nobody asked for it). The smallest total drop in fit goes first, then the
-    // swap that drops seniors least, then tie order. Unknown genders never move.
+    // Female). For each gender, a group with one student scores 2, with two scores 1, and with none or
+    // three and up scores 0. Each round looks at every swap of two students between groups and every
+    // move of one student to another group, in the same week and track, that lowers the total score of
+    // the groups it touches. A move keeps the group that grows at or under 12 students, or its Max
+    // size, and the group that shrinks at or above the minimum. A change needs every rule above to
+    // still hold, drops each student at most one step, and never leaves a student in fewer projects
+    // they checked (nobody asked for it). The smallest total drop in fit goes first, then the change
+    // that drops seniors least, then tie order, a move before a swap. Unknown genders never move.
     if(move&&cfg.balanceGender){
-      var gender={},count={};Object.keys(where).forEach(function(id){gender[id]=genderOf(byId[id].gender);});
-      function bad(c){c=c||{Male:0,Female:0};return (c.Male>0&&c.Male<3?1:0)+(c.Female>0&&c.Female<3?1:0);}
-      function shifted(c,out,into){var d={Male:0,Female:0};if(c){d.Male=c.Male;d.Female=c.Female;}d[out]--;d[into]++;return d;}
+      var gender={},count={},one=function(){return 1;};Object.keys(where).forEach(function(id){gender[id]=genderOf(byId[id].gender);});
+      function lone(n){return n===1?2:n===2?1:0;}
+      function bad(c){c=c||{Male:0,Female:0};return lone(c.Male)+lone(c.Female);}
+      function shifted(c,out,into){var d={Male:0,Female:0};if(c){d.Male=c.Male;d.Female=c.Female;}if(out)d[out]--;if(into)d[into]++;return d;}
       function better(a,b){for(var i=0;i<a.length;i++)if(a[i]!==b[i])return a[i]<b[i];return false;}
+      // The most students a move may bring a group to: its project's Max size, or 12, the top of the
+      // preferred group size.
+      function room(pid){return Number.isInteger(choiceFor(choices,pid).maxSize)?limit(project[pid],cfg,choices):12;}
       for(var round=0;round<1000;round++){
         count={};Object.keys(where).forEach(function(id){if(gender[id])groupsOf(id).forEach(function(g){var c=count[g]=count[g]||{Male:0,Female:0};c[gender[id]]++;});});
         var best=null,movable=Object.keys(where).filter(function(id){return gender[id]&&!fixed[id];}).sort(run.tie.ids);
+        var consider=function(score,changes){if(best&&!better(score,best.score))return;if(!attempt(changes,one,true,true,nobody))best={score:score,changes:changes};};
         Object.keys(count).filter(function(g){return bad(count[g]);}).sort(compare).forEach(function(g){
           var w=g.indexOf('|')<0?0:Number(g.split('|')[1]);
           movable.filter(function(x){return group(x,w)===g;}).forEach(function(x){movable.forEach(function(y){
@@ -518,15 +527,23 @@ var PPEngine = (function () {
             if(bad(count[g])+bad(count[h])<=bad(shifted(count[g],gender[x],gender[y]))+bad(shifted(count[h],gender[y],gender[x])))return;
             var dx=tier(x,where[y][w])-tier(x,where[x][w]),dy=tier(y,where[x][w])-tier(y,where[y][w]);
             if(dx>1||dy>1)return;
-            var score=[dx+dy,(byId[x].grade===12?Math.max(0,dx):0)+(byId[y].grade===12?Math.max(0,dy):0),run.tie.keys[x],run.tie.keys[y]];
-            if(best&&!better(score,best.score))return;
-            if(!attempt([{id:x,w:w,to:where[y][w]},{id:y,w:w,to:where[x][w]}],function(){return 1;},true,true,nobody))best={score:score,x:x,y:y,w:w};
+            consider([dx+dy,(byId[x].grade===12?Math.max(0,dx):0)+(byId[y].grade===12?Math.max(0,dy):0),run.tie.keys[x],run.tie.keys[y]],[{id:x,w:w,to:where[y][w]},{id:y,w:w,to:where[x][w]}]);
           });});
         });
+        movable.forEach(function(x){(track[x]==='Major'?[0]:[0,1]).forEach(function(w){
+          var g=group(x,w);
+          projects.forEach(function(p){
+            var h=track[x]==='Major'?p.id:p.id+'|'+w;
+            if(p.finalLength!==track[x]||h===g||(size[h]||0)>=room(p.id))return;
+            if(bad(count[g])+bad(count[h])<=bad(shifted(count[g],gender[x],null))+bad(shifted(count[h],null,gender[x])))return;
+            var dx=tier(x,p.id)-tier(x,where[x][w]);
+            if(dx>1)return;
+            consider([dx,byId[x].grade===12?Math.max(0,dx):0,run.tie.keys[x],''],[{id:x,w:w,to:p.id}]);
+          });
+        });});
         if(!best)break;
-        var bx=where[best.x][best.w],by=where[best.y][best.w];
-        attempt([{id:best.x,w:best.w,to:by},{id:best.y,w:best.w,to:bx}],function(){return 1;},true,false,nobody);
-        [best.x,best.y].forEach(function(id){remark(id,'reason','Swapped with a student in another group to balance the groups.');});
+        attempt(best.changes,one,true,false,nobody);
+        best.changes.forEach(function(c){remark(c.id,'reason',best.changes.length===2?'Swapped with a student in another group to balance the groups.':'Moved to another group to balance the groups.');});
       }
     }
     function status(s,who){return s.status==='trip'?who+' is on an ExEd trip':s.status==='leader'?who+' is a freshman leader':who+' is not placed';}

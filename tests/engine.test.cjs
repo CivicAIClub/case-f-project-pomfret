@@ -675,6 +675,64 @@ test('a gender swap never moves a student out of a project they checked into one
   assert.deepEqual(E.check(people,majors,rows,config({minSize:1,maxSize:8}),{}).filter(c=>c.code==='GENDER_BALANCE').map(c=>c.message.split(':')[0]),['b','a']);
 });
 
+// f Female and m Male students who fit their own Major at 1: a, b (goal 9) or c (goal 8). Each checked
+// their own project and z, or the second project named in also, which they fit at 2.
+const homeGoals={a:['3'],b:['9'],c:['8']};
+const team=(home,f,m,also={})=>[...Array(f).fill('Female'),...Array(m).fill('Male')].map((g,i)=>{const id=home+g[0]+(i<f?i:i-f);return s(id,{choices:[home,also[id]||'z'],goals:homeGoals[home],gender:g});});
+const genderProjects=n=>[p('a'),p('b','Major',{goals:['9']}),p('c','Major',{goals:['8']})].slice(0,n);
+const femaleIn=(r,students,id)=>r.assignments.filter(a=>a.project1===id&&students.find(x=>x.id===a.studentId).gender==='Female').length;
+const spot=(r,id)=>r.assignments.find(a=>a.studentId===id);
+test('a group with one Female student gets to three by swaps, because going from one to two counts as better',()=>{
+  // Every group is full at eight, so only swaps work. a's one Female student checked only a. bF0 and
+  // cF0 checked a, and aM0 checked b and aM1 checked c.
+  const students=[...team('a',1,7,{aM0:'b',aM1:'c'}),...team('b',4,4,{bF0:'a'}),...team('c',4,4,{cF0:'a'})];
+  const cfg=config({minSize:4,targetSize:8,maxSize:8,projectCount:3,balanceGender:true}),off=E.sort(students,genderProjects(3),{...cfg,balanceGender:false},{});
+  assert.deepEqual(genderMessages(off),['a: 1 Female and 7 Male students. Gender balancing is turned off in Settings.']);
+  const r=E.sort(students,genderProjects(3),cfg,{});
+  assert.equal(femaleIn(r,students,'a'),3); assert.deepEqual(genderMessages(r),[]);
+  assert.deepEqual(['aM0','aM1','bF0','cF0'].map(id=>spot(r,id).project1),['b','c','a','a']);
+  assert.deepEqual(r.assignments.filter(a=>/balance the groups/.test(a.reason)).map(a=>a.studentId).sort(),['aM0','aM1','bF0','cF0']);
+  for(const id of ['aM0','aM1','bF0','cF0'])assert.match(spot(r,id).reason,/ Swapped with a student in another group to balance the groups\.$/);
+});
+test('a group with one Female student and room for more takes in Female students who checked it, with nobody moving back',()=>{
+  // Groups of eight with room up to 12. bF0 and cF0 checked a; nobody in a checked anything else.
+  const students=[...team('a',1,7),...team('b',4,4,{bF0:'a'}),...team('c',4,4,{cF0:'a'})];
+  const cfg=config({minSize:4,targetSize:8,maxSize:14,projectCount:3,balanceGender:true}),off=E.sort(students,genderProjects(3),{...cfg,balanceGender:false},{});
+  const r=E.sort(students,genderProjects(3),cfg,{});
+  assert.deepEqual([femaleIn(r,students,'a'),groupSize(r,'a'),groupSize(r,'b'),groupSize(r,'c')],[3,10,7,7]);
+  assert.deepEqual([spot(r,'bF0').project1,spot(r,'cF0').project1],['a','a']);
+  for(const id of ['bF0','cF0'])assert.match(spot(r,id).reason,/ Moved to another group to balance the groups\.$/);
+  // Only the two Female students moved.
+  assert.deepEqual(r.assignments.filter((a,i)=>a.project1!==off.assignments[i].project1).map(a=>a.studentId).sort(),['bF0','cF0']);
+  assert.deepEqual(genderMessages(r),[]);
+});
+test('a gender move never takes a group without a Max size above 12, or a group below the minimum',()=>{
+  // a has 12 students, so a move into it would make 13.
+  let students=[...team('a',1,11),...team('b',6,6,{bF0:'a',bF1:'a'})],cfg=config({minSize:4,targetSize:8,maxSize:14,balanceGender:true});
+  let r=E.sort(students,genderProjects(2),cfg,{});
+  assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
+  assert.deepEqual(genderMessages(r),["a: 1 Female and 11 Male students. We couldn't fix it without breaking another rule."]);
+  // With a Max size of 14, a may grow to it.
+  r=E.sort(students,genderProjects(2),cfg,{a:{maxSize:14}});
+  assert.deepEqual([femaleIn(r,students,'a'),groupSize(r,'a'),spot(r,'bF0').project1,spot(r,'bF1').project1],[3,14,'a','a']);
+  // b is at the minimum of seven, so bF0 can't leave it.
+  students=[...team('a',1,6),...team('b',4,3,{bF0:'a'})];cfg=config({minSize:7,targetSize:7,maxSize:8,balanceGender:true});
+  r=E.sort(students,genderProjects(2),cfg,{});
+  assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
+  // With a minimum of six, she moves.
+  assert.equal(spot(E.sort(students,genderProjects(2),{...cfg,minSize:6},{}),'bF0').project1,'a');
+});
+test('a swap or move that takes one group from three Female students to two, to take another from one to two, is refused',()=>{
+  // bF0 checked a and aM0 checked b, so the move and the swap break no other rule.
+  const cfg=config({minSize:4,targetSize:8,maxSize:14,balanceGender:true});
+  let students=[...team('a',1,7,{aM0:'b'}),...team('b',3,5,{bF0:'a'})],r=E.sort(students,genderProjects(2),cfg,{});
+  assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
+  assert.deepEqual(genderMessages(r),["a: 1 Female and 7 Male students. We couldn't fix it without breaking another rule."]);
+  // With four Female students in b the total goes down, and bF0 moves.
+  students=[...team('a',1,7,{aM0:'b'}),...team('b',4,4,{bF0:'a'})];r=E.sort(students,genderProjects(2),cfg,{});
+  assert.deepEqual([spot(r,'bF0').project1,spot(r,'aM0').project1],['a','a']);
+});
+
 test('two Minor students who share a Minor in different weeks are joined by switching one student\'s weeks, with the same fits',()=>{
   const projects=[p('glass','Minor',{name:'Glass Fusing'}),p('larp','Minor',{name:'LARP',goals:['9']}),p('cooking','Minor',{name:'Cooking'})];
   const cfg=config({projectCount:3,minorProjects:3,minorMin:6,minorTarget:6,minorMax:6,maxSize:3,useFriendRequests:true});
