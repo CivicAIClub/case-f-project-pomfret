@@ -67,6 +67,15 @@ var PPParser = (function () {
     });
     return unique(result);
   }
+  // Hand-typed trip rows have the trip's destination, such as JAPAN, where the email goes. It is
+  // kept in normal capitals: "Costa Rica".
+  function destinationOf(value) {
+    var raw = text(value);
+    if (!raw || raw.indexOf('@') >= 0 || !/[a-z]/i.test(raw)) return '';
+    return raw.toLowerCase().split(/\s+/).map(function (word, i) {
+      return i && ['and', 'of', 'the'].indexOf(word) >= 0 ? word : word.replace(/(^|[-'])([a-z])/g, function (_, before, letter) { return before + letter.toUpperCase(); });
+    }).join(' ');
+  }
   function emailOf(value) {
     var email = text(value).toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
@@ -95,7 +104,8 @@ var PPParser = (function () {
     return sameLastName(x, y) && sameFirstName(x, y);
   }
   function nameSpelling(value) { return nameParts(value).words.slice().sort().join(' '); }
-  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else is unknown.
+  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else, such as
+  // Nonbinary, is kept as written and counted as neither.
   function genderOf(value) {
     var v = normalize(value);
     return v === 'm' || v === 'male' || v === 'boy' ? 'Male' : v === 'f' || v === 'female' || v === 'girl' ? 'Female' : null;
@@ -163,11 +173,15 @@ var PPParser = (function () {
       previous: findHeader(headers, 'Previous projects', function (h) { return h === 'previous projects' || h.indexOf('what project s were you in last year') === 0; }, false),
       preference: findHeader(headers, 'Major/Minor preference', function (h) { return h === 'preference' || h.indexOf('would you prefer to do a major project') === 0; }, true),
       comments: findHeader(headers, 'Comments', function (h) { return h === 'comments' || h.indexOf('please share anything else') === 0; }, false),
+      celebration: findHeader(headers, 'Celebration of Learning', function (h) { return h.indexOf('what do you want to do for your celebration of learning') === 0; }, false),
       goals: headers.map(function (h,i) { h = normalize(h); return h === 'un goals' || h.indexOf('sustainable development goals') >= 0 ? i : -1; }).filter(function (i) { return i >= 0; }),
       types: headers.map(function (h,i) { h = normalize(h); return h === 'types' || h.indexOf('type of project') >= 0 ? i : -1; }).filter(function (i) { return i >= 0; }),
       choices: headers.map(function (h,i) { h = normalize(h); return h === 'projects selected' || h === 'choices' || (h.indexOf('check all') >= 0 && h.indexOf('projects') >= 0) ? i : -1; }).filter(function (i) { return i >= 0; })
     };
   }
+  // The kind of Celebration of Learning, such as "Project Fair" from "Project Fair - I want to...".
+  // What follows the dash is the student's own words, so it is left out.
+  function celebrationOf(value) { return text(value).split(/\s+[-\u2013\u2014]\s+/)[0].trim(); }
   function preferenceOf(value) {
     var val = normalize(value);
     if (val === 'not sure' || val === 'either' || val.indexOf('not sure') === 0) return 'Not sure';
@@ -203,10 +217,11 @@ var PPParser = (function () {
       if (c.previous < 0) issues.push(issue('PREVIOUS_UNAVAILABLE', 'warning', sheetName + ': no previous-project question; repeat-project checks cannot be completed for this grade.'));
       table.values.slice(1).forEach(function (row, index) {
         if (!row.some(function (v) { return text(v) !== ''; })) return;
-        var source = {sheet:sheetName, row:index + 2}, email = emailOf(row[c.email]), name = text(row[c.name]);
+        var source = {sheet:sheetName, row:index + 2}, email = emailOf(row[c.email]), name = text(row[c.name]), destination = email ? '' : destinationOf(row[c.email]);
         var fill = table.backgrounds && table.backgrounds[index + 1] ? table.backgrounds[index + 1][c.name] : '';
         var status = COLORS[colorOf(fill)] || 'eligible', parsedTime = timestamp(row[c.timestamp]);
         var problems = [], identityInvalid = !name || !email;
+        if (destination && status !== 'trip') issues.push(issue('DESTINATION_NOT_TRIP', 'warning', (name ? '"' + name + '"' : 'This row') + ' has "' + destination + '" in the email column but isn\'t colored blue. Check whether this student is on an ExEd trip.', source));
         stats.rawRows++;
         if (!name) problems.push('Name is missing.');
         if (!email) problems.push('Valid email is missing; reconcile this roster entry.');
@@ -232,6 +247,7 @@ var PPParser = (function () {
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
           previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
+          celebration:c.celebration >= 0 ? celebrationOf(row[c.celebration]) : '', destination:destination,
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
           _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
@@ -317,6 +333,7 @@ var PPParser = (function () {
       } else if (target) {
         // The row's status color wins. A form still missing required answers stays in review.
         if (color && !(color === 'late' && target.status === 'review')) target.status = color;
+        if (row.destination && !target.destination) target.destination = row.destination;
         if (match.lastOnly) target.issues.push('Matched a hand-typed row by last name only. Check it\'s the same student.');
         kept.splice(kept.indexOf(row), 1);
         stats.mergedRows++;
@@ -332,17 +349,16 @@ var PPParser = (function () {
         issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
       }
     });
-    var genders = {}, unread = 0;
+    var genders = {};
     (options.genders || []).forEach(function (g) {
       // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
-      var email = emailOf(g.email), gender = genderOf(g.gender);
+      var email = emailOf(g.email), gender = genderOf(g.gender) || text(g.gender);
       if (!email) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email or Student ID.')); return; }
-      // Never guess: anything but Male or Female leaves the student's gender unknown.
-      if (!gender) { unread++; return; }
+      // Never guess. A blank row is no gender on file; anything but Male or Female is kept as written.
+      if (!gender) return;
       if (!genders[email]) genders[email] = [];
       genders[email].push(gender);
     });
-    if (unread) issues.push(issue('GENDER_UNKNOWN_VALUE', 'info', unread + ' Gender row' + (unread === 1 ? ' is' : 's are') + ' blank or say something other than Male or Female, so ' + (unread === 1 ? 'that student counts' : 'those students count') + ' as unknown.'));
     var statusChanges = options.statusChanges || [];
     statusChanges.forEach(function (change) {
       var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
@@ -360,11 +376,18 @@ var PPParser = (function () {
       var values = unique(genders[s.id] || (s._sharedEmail ? [] : genders[s.email]) || []);
       if (s._sharedEmail && !genders[s.id] && genders[s.email]) issues.push(issue('GENDER_SHARED_EMAIL', 'warning', 'Gender was not used for this student because another student sent a form from the same email. Add a Gender row with this Student ID instead.', s.source, s.id));
       if (values.length === 1) s.gender = values[0];
-      if (values.length > 1) { s.issues.push('Conflicting supplied gender values; gender remains unknown.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
+      // Rows that disagree are all kept, so the student counts as neither Male nor Female.
+      if (values.length > 1) { s.gender = values.join(' / '); s.issues.push('The Gender tab lists this student with different values, so they are not counted as Male or Female.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
       delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus; delete s._sharedEmail;
       stats.byGrade[s.grade] = (stats.byGrade[s.grade] || 0) + 1;
       stats.byStatus[s.status] = (stats.byStatus[s.status] || 0) + 1;
     });
+    // Students who can be placed but aren't counted as Male or Female, in two kinds.
+    if ((options.genders || []).length) {
+      var placeable = kept.filter(function (s) { return s.status === 'eligible' || s.status === 'late'; });
+      var missing = placeable.filter(function (s) { return !s.gender; }).length, unlisted = placeable.filter(function (s) { return s.gender && !genderOf(s.gender); }).length;
+      if (missing || unlisted) issues.push(issue('GENDER_NOT_COUNTED', 'info', 'Of the students who can be placed, ' + missing + (missing === 1 ? ' has' : ' have') + ' no gender on file and ' + unlisted + (unlisted === 1 ? ' is' : ' are') + ' not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+    }
     kept.sort(function (a,b) { return b.grade - a.grade || a.id.localeCompare(b.id); });
     stats.students = kept.length;
     return {students:kept, issues:issues, stats:stats};

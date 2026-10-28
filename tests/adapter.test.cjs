@@ -12,7 +12,8 @@ function fixture(useRealCore = false) {
   const spreadsheet = {
     getSheetByName: name => sheets.get(name) || null,
     insertSheet: name => { const s = new Sheet(name); sheets.set(name, s); return s; },
-    getSheets: () => [...sheets.values()]
+    getSheets: () => [...sheets.values()],
+    deleteSheet: sheet => { sheets.delete(sheet.name); }
   };
   const catalog = [
     { id: 'robotics', name: 'Robotics', length: 'Major', types: ['hands'], goals: ['9'], aliases: [], enabled: true },
@@ -60,6 +61,7 @@ function saved(f) {
   return run;
 }
 const GRADE_TABS = ['PP Senior', 'PP Junior', 'PP Sophomore'];
+const INPUT_TABS = { 12: 'Senior', 11: 'Junior', 10: 'Sophomore' };
 test('setup preserves existing source, settings and project decisions', () => {
   const f = fixture(); f.source(); f.adapter.setup();
   f.sheets.get('Settings').data[1][1] = 9;
@@ -347,7 +349,7 @@ test('Check again reports groups that hand moves push over the maximum or under 
   assert.ok(checks.some(c => c.code === 'OVER_CAPACITY' && c.severity === 'error' && c.projectId === to.id));
   assert.ok(checks.some(c => c.code === 'UNDER_MINIMUM' && c.severity === 'error' && c.projectId === from.id));
 });
-test('Check again reports a hand move into last year\'s project', () => {
+test('Check again reports a hand move into last year\'s project as information', () => {
   let { f, run } = practiceRun('Before the last-year answer');
   const first = placedRows(f, run).find(x => x.tab === 'PP Junior' && !x.a.project2), id = first.row[0];
   const to = run.projects.find(p => p.finalLength === 'Major' && p.id !== first.a.project1);
@@ -357,7 +359,13 @@ test('Check again reports a hand move into last year\'s project', () => {
   const pick = placedRows(f, run).find(x => x.row[0] === id);
   assert.notEqual(pick.a.project1, to.id);
   pick.row[2] = pick.row[3] = label(to);
-  assert.ok(f.adapter.checkAgain().some(c => c.code === 'PREVIOUS_PROJECT' && c.severity === 'error' && c.studentId === id));
+  const checks = [...f.adapter.checkAgain()].filter(c => c.code === 'PREVIOUS_PROJECT' && c.studentId === id);
+  assert.deepEqual(checks.map(c => [c.severity, c.message]), [['info', "In last year's project because of a move by hand."]]);
+  assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'info' && r[1] === 'PREVIOUS_PROJECT' && r[3] === id));
+  assert.ok(!f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'PREVIOUS_PROJECT'));
+  // The flag is information, so Review flags and PP Needs you leave it out.
+  assert.doesNotMatch(f.sheets.get('PP Junior').data.find(r => r[0] === id)[8], /last year's project/);
+  assert.ok(!f.sheets.get('PP Needs you').data.some(r => /last year's project/.test(r[5])));
 });
 test('Check again reports a gender rule a hand move breaks when gender data exists', () => {
   const odd = 'practice1@example.org';
@@ -470,8 +478,8 @@ test('Check again rebuilds the group tabs, PP Summary and PP Needs you from the 
   const summary = () => new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
   const majors = summary().get('Major students'), snapshot = JSON.stringify(f.sheets.get('PP Run snapshot').data);
   f.adapter.checkAgain();
-  assert.ok(f.sheets.get(registry.get(target.id)).data.some(r => r[3] === pick.row[0] && r[0] === 'Both weeks'));
-  assert.ok(!f.sheets.get(registry.get(pick.a.project1)).data.some(r => r[3] === pick.row[0]));
+  assert.ok(f.sheets.get(registry.get(target.id)).data.some(r => r[0] === pick.s.name && r[1] === pick.s.grade));
+  assert.ok(!f.sheets.get(registry.get(pick.a.project1)).data.some(r => r[0] === pick.s.name));
   assert.equal(summary().get('Major students'), majors + 1);
   assert.equal(summary().get('Review status'), 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
   assert.ok(f.sheets.get('PP Needs you').data.length > 1);
@@ -627,8 +635,8 @@ test('Setup adds Max size to an older Project choices tab and keeps its values; 
   const f = fixture(true); f.adapter.practice();
   const choices = f.sheets.get('Project choices').data;
   assert.equal(choices[0][7], 'Max size');
-  // Make it look like a tab from before this round, with a decision in it.
-  choices.forEach(r => r.splice(7, 1)); choices[1][2] = true;
+  // Make it look like a tab from before round 2, with a decision in it.
+  choices.forEach(r => r.splice(7)); choices[1][2] = true;
   const before = JSON.stringify(choices);
   f.adapter.setup();
   assert.equal(choices[0][7], 'Max size');
@@ -644,4 +652,283 @@ test('Setup adds Max size to an older Project choices tab and keeps its values; 
   assert.match(String(summary.get('Group size: ' + big.projects.find(p => p.finalLength === 'Minor').name)), /^Week 1: \d+, week 2: \d+$/);
   choices.find(r => r[0] === popular)[7] = 15;
   assert.throws(() => f.adapter.sort('Too big'), /Max size must be a whole number from 1 to 14/);
+});
+
+test('Setup adds Faculty and Location to an older Project choices tab and keeps every value; Faculty can list several names', () => {
+  const f = fixture(true); f.adapter.practice();
+  const choices = f.sheets.get('Project choices').data;
+  assert.deepEqual(choices[0].slice(7), ['Max size', 'Faculty', 'Location']);
+  // A tab from round 2, with decisions in it.
+  choices.forEach(r => r.splice(8)); choices[1][2] = true; choices[2][7] = 12;
+  const before = JSON.stringify(choices);
+  f.adapter.setup();
+  assert.deepEqual(choices[0].slice(7), ['Max size', 'Faculty', 'Location']);
+  assert.equal(JSON.stringify(choices.map(r => r.slice(0, 8))), before);
+  choices[1][8] = 'Ms. Rivera,Mr. Chen ,  '; choices[1][9] = 'Room 12';
+  f.adapter.setup();
+  assert.deepEqual([choices[1][8], choices[1][9]], ['Ms. Rivera,Mr. Chen ,  ', 'Room 12']);
+  const details = f.adapter.readDetails();
+  assert.deepEqual({ ...details[choices[1][0]] }, { faculty: 'Ms. Rivera, Mr. Chen', location: 'Room 12' });
+  assert.deepEqual({ ...details[choices[3][0]] }, { faculty: '', location: '' });
+  // The sort never reads them: the same groups with or without.
+  const withNames = f.adapter.sort('With faculty').assignments.map(a => [a.studentId, a.project1, a.project2]);
+  choices.forEach((r, i) => { if (i) r[8] = r[9] = ''; });
+  assert.deepEqual(f.adapter.sort('Without faculty').assignments.map(a => [a.studentId, a.project1, a.project2]), withNames);
+});
+
+// The blocks of a tab laid out for printing: each title or heading row, its header row, and the rows
+// under it up to the next blank row.
+function blocks(sheet, isTitle) {
+  const out = [];
+  sheet.data.forEach((row, i) => {
+    if (isTitle(row[0])) out.push({ title: row[0], row: i + 1, header: sheet.data[i + 1], rows: [] });
+    else if (out.length && i > out[out.length - 1].row && row.some(v => v !== '') && !out[out.length - 1].closed) out[out.length - 1].rows.push(row);
+    else if (out.length && i > out[out.length - 1].row && row.every(v => v === '')) out[out.length - 1].closed = true;
+  });
+  return out;
+}
+const MASTER_LIST_HEADER = ['Name', 'Project #1', 'Project Faculty', 'Project #2', 'Project Faculty', 'Why'];
+test('PP Master list has seniors, juniors and sophomores by last name, with both projects, their faculty and the reason; Check again rebuilds it', () => {
+  const f = fixture(true); f.adapter.practice();
+  // Invented names in both formats, and a senior on a trip.
+  const senior = f.sheets.get('Senior').data;
+  senior[1][2] = 'Zimmer, Ava'; senior[2][2] = 'Ben Adams'; senior[3][2] = 'Cy Young Jr.';
+  f.sheets.get('Status changes').data.push([senior[4][1], '', 'trip', 'ExEd trip']);
+  f.sheets.get('Project choices').data.slice(1).forEach(r => { r[8] = 'Faculty of ' + r[1]; });
+  const result = f.adapter.sort('Master list'), run = saved(f), list = f.sheets.get('PP Master list');
+  const sections = blocks(list, v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v));
+  assert.deepEqual(sections.map(s => s.title), ['SENIORS', 'JUNIORS', 'SOPHOMORES']);
+  for (const s of sections) { assert.ok(list.isBold(s.row), s.title); assert.deepEqual(s.header, MASTER_LIST_HEADER); assert.ok(!list.isBold(s.row + 2)); }
+  // Last names: the practice names end in a number, which sorts before letters.
+  const names = sections[0].rows.map(r => r[0]);
+  assert.deepEqual(names.slice(-3), ['Ben Adams', 'Cy Young Jr.', 'Zimmer, Ava']);
+  assert.deepEqual(names.slice(0, -3), names.slice(0, -3).slice().sort());
+  assert.ok(!names.includes(senior[4][2]));
+  assert.equal(sections.reduce((n, s) => n + s.rows.length, 0), result.summary.placed);
+  const byName = new Map(sections.flatMap(s => s.rows).map(r => [r[0], r]));
+  for (const [id, a] of run.assignments) {
+    const s = run.students.get(id), row = byName.get(s.name);
+    if (a.status !== 'placed') { assert.equal(row, undefined); continue; }
+    const one = run.projects.find(p => p.id === a.project1), two = run.projects.find(p => p.id === (a.project2 || a.project1));
+    assert.deepEqual(row, [s.name, label(one), 'Faculty of ' + one.name, label(two), 'Faculty of ' + two.name, a.reason]);
+  }
+  // A hand move shows up after Check again.
+  const pick = placedRows(f, run).find(x => x.a.project2), target = moveToMajor(f, run, pick);
+  f.adapter.checkAgain();
+  const moved = blocks(f.sheets.get('PP Master list'), v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v)).flatMap(s => s.rows).find(r => r[0] === pick.s.name);
+  assert.deepEqual(moved.slice(0, 5), [pick.s.name, label(target), 'Faculty of ' + target.name, label(target), 'Faculty of ' + target.name]);
+  assert.match(moved[5], /^Moved by hand\. /);
+});
+
+const PROJECTS_HEADER = ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'];
+test('PP Projects has a row per running project with its sizes, genders, grades, how many picked it and plain flags; Check again rebuilds it', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare();
+  // Invented genders: every third student is Female.
+  f.sheets.get('PP Students').data.slice(1).forEach((r, i) => f.sheets.get('Gender').data.push([r[2], i % 3 ? 'Male' : 'Female']));
+  const plain = f.adapter.sort('Find the projects'), majors = plain.projects.filter(p => p.finalLength === 'Major').sort((a, b) => a.name.localeCompare(b.name));
+  const [open, sized] = majors, choices = f.sheets.get('Project choices').data, choice = id => choices.find(r => r[0] === id);
+  choice(sized.id)[7] = 14; choice(open.id)[8] = 'Ms. Rivera, Mr. Chen'; choice(open.id)[9] = 'Room 12';
+  f.adapter.sort('Projects overview');
+  const run = saved(f), tab = () => f.sheets.get('PP Projects').data;
+  assert.deepEqual(tab()[0], PROJECTS_HEADER);
+  const rows = tab().slice(1), order = run.projects.slice().sort((a, b) => (a.finalLength === 'Major' ? 0 : 1) - (b.finalLength === 'Major' ? 0 : 1) || a.name.localeCompare(b.name));
+  assert.deepEqual(rows.map(r => r[1]), order.map(label));
+  assert.deepEqual(rows.map(r => r[0]), order.map((_, i) => i + 1));
+  const students = [...run.students.values()];
+  for (const [i, p] of order.entries()) {
+    const weeks = (p.finalLength === 'Minor' ? [0, 1] : [0]).map(w => [...run.assignments.values()].filter(a => a.status === 'placed' && (w ? a.project2 : a.project1) === p.id).map(a => run.students.get(a.studentId)));
+    const count = test => weeks.map(g => g.filter(test).length), show = test => count(test).join(' / ');
+    const flags = weeks.flatMap((g, w) => {
+      const when = weeks.length === 2 ? ' in week ' + (w + 1) : '', male = g.filter(s => s.gender === 'Male').length, female = g.filter(s => s.gender === 'Female').length;
+      return [...(p.id !== sized.id && g.length > 12 ? ['Over 12 students' + when] : []), ...(g.length < 8 ? ['Under 8 students' + when] : []), ...((male && male < 3) || (female && female < 3) ? ['Fewer than 3 of one gender' + when] : [])];
+    });
+    const sizes = weeks.map(g => g.length);
+    assert.deepEqual(rows[i].slice(4), [sizes[0], sizes[sizes.length - 1], ...[s => s.gender === 'Male', s => s.gender === 'Female', s => s.grade === 12, s => s.grade === 11, s => s.grade === 10, s => s.choices.includes(p.id)].map(t => weeks.length === 2 ? show(t) : count(t)[0]), flags.join('; ')], p.name);
+  }
+  assert.deepEqual(rows.find(r => r[1] === label(open)).slice(2, 4), ['Room 12', 'Ms. Rivera, Mr. Chen']);
+  assert.ok(students.length && rows.some(r => /Fewer than 3 of one gender/.test(r[12])));
+  // Four Minor students moved by hand into each of two Majors: over 12 is flagged only without a Max size.
+  const minors = placedRows(f, run).filter(x => x.a.project2);
+  minors.slice(0, 4).forEach(x => { x.row[2] = x.row[3] = label(open); });
+  minors.slice(4, 8).forEach(x => { x.row[2] = x.row[3] = label(sized); });
+  f.adapter.checkAgain();
+  const after = id => tab().find(r => r[1] === label(run.projects.find(p => p.id === id)));
+  assert.ok(after(open.id)[4] > 12 && after(sized.id)[4] > 12);
+  assert.match(after(open.id)[12], /^Over 12 students/);
+  assert.doesNotMatch(after(sized.id)[12], /Over 12/);
+});
+
+test('each project tab is laid out like last year\'s roster: label, faculty, location, then students by grade and last name with a bold total; a Minor has a block for each week', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.setup();
+  const plain = f.adapter.sort('Find the projects'), major = plain.projects.find(p => p.finalLength === 'Major'), minor = plain.projects.find(p => p.finalLength === 'Minor');
+  const choice = f.sheets.get('Project choices').data.find(r => r[0] === major.id); choice[8] = 'Ms. Rivera,Mr. Chen'; choice[9] = 'Room 12';
+  f.adapter.sort('Rosters');
+  const run = saved(f), registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const HEADER = ['Student', 'Grade', 'Celebration of Learning', 'Why'];
+  const members = (p, w) => [...run.assignments.values()].filter(a => a.status === 'placed' && (w ? a.project2 : a.project1) === p.id).map(a => ({ s: run.students.get(a.studentId), a }));
+  const order = list => list.slice().sort((x, y) => y.s.grade - x.s.grade || x.s.name.localeCompare(y.s.name)).map(x => [x.s.name, x.s.grade, x.s.celebration, x.a.reason]);
+  // The Major: one block.
+  let tab = f.sheets.get(registry.get(major.id)), group = members(major, 0);
+  assert.deepEqual(tab.data.slice(0, 4).map(r => r[0]), [label(major), 'Faculty: Ms. Rivera, Mr. Chen', 'Location: Room 12', 'Student']);
+  assert.deepEqual(tab.data[3], HEADER);
+  assert.deepEqual(tab.data.slice(4, -1), order(group));
+  assert.deepEqual(tab.data[tab.data.length - 1][0], 'TOTAL - ' + group.length + ' Students');
+  assert.ok(tab.isBold(1) && tab.isBold(tab.data.length) && !tab.isBold(2) && !tab.isBold(5));
+  // Practice answers show the kind of Celebration only, and no comment appears.
+  assert.ok(group.length && tab.data.slice(4, -1).every(r => ['Project Fair', 'Presentation', 'Performance', 'Gallery Walk'].includes(r[2])));
+  assert.ok(!tab.data.flat().some(v => /Invented practice response|Show what we made|A short scene/.test(String(v))));
+  // The Minor: GROUP 1 and GROUP 2, each with its header and total. Blank faculty and location stay blank.
+  tab = f.sheets.get(registry.get(minor.id));
+  const one = members(minor, 0), two = members(minor, 1), expected = [[label(minor)], ['Faculty:'], ['Location:'],
+    ['GROUP 1 (week 1)'], HEADER, ...order(one), ['GROUP 1 TOTAL - ' + one.length + ' Students'], [''],
+    ['GROUP 2 (week 2)'], HEADER, ...order(two), ['GROUP 2 TOTAL - ' + two.length + ' Students']];
+  assert.deepEqual(tab.data.map(r => r.slice(0, 4).join('|').replace(/\|+$/, '')), expected.map(r => r.join('|')));
+  const bold = tab.data.map((_, i) => tab.isBold(i + 1));
+  assert.deepEqual(tab.data.map((r, i) => bold[i] ? r[0] : null).filter(Boolean), [label(minor), 'GROUP 1 (week 1)', 'Student', 'GROUP 1 TOTAL - ' + one.length + ' Students', 'GROUP 2 (week 2)', 'Student', 'GROUP 2 TOTAL - ' + two.length + ' Students']);
+  // Grades go seniors, juniors, then sophomores within each block.
+  for (const g of [one, two]) assert.ok(order(g).every((r, i, all) => !i || all[i - 1][1] >= r[1]));
+});
+
+test('the sentence saying why a student didn\'t get a pick shows in PP Master list, the project tabs, PP Needs you and PP Seniors to check', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.setup();
+  // The first senior checked only Glass Fusing, and it doesn't run.
+  const senior = f.sheets.get('Senior').data, name = senior[1][2];
+  senior[1][7] = 'Glass Fusing'; f.sheets.get('Project choices').data.find(r => r[0] === 'glass-fusing')[2] = false;
+  f.adapter.sort('Missed picks');
+  const run = saved(f), id = senior[1][1], a = run.assignments.get(id), reason = a.reason;
+  assert.equal(a.status, 'placed'); assert.match(reason, / None of their picks are running: Glass Fusing\.$/);
+  const registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const rowFor = (tab, column) => f.sheets.get(tab).data.find(r => r[column] === name);
+  assert.equal(rowFor('PP Master list', 0)[5], reason);
+  assert.equal(rowFor(registry.get(a.project1), 0)[3], reason);
+  assert.equal(rowFor('PP Seniors to check', 0)[4], reason);
+  // PP Needs you shows each listed student's reason, and some of those say why they missed a pick.
+  const needs = f.sheets.get('PP Needs you').data.slice(1);
+  for (const r of needs) assert.equal(r[4], run.assignments.get(r[0]).reason);
+  assert.ok(needs.some(r => / None of their picks are running: .*\.| Their other picks were full\./.test(r[4])));
+  assert.equal(f.sheets.get('PP Senior').data.find(r => r[0] === id)[7], reason);
+});
+
+test('PP Not placed lists every student who isn\'t placed and why, with a trip\'s destination from the email column; an uncolored destination is a PP Input check warning', () => {
+  const f = fixture(true); f.adapter.practice();
+  const senior = f.sheets.get('Senior'), typed = (name, where) => ['', where, name, '', '', '', '', '', '', ''];
+  // Hand-typed rows with a destination where the email goes: one blue, one not.
+  senior.data.push(typed('Rivera, Sam', 'COSTA RICA'), typed('Chen, Lee', 'JAPAN'));
+  senior.getRange(senior.data.length - 1, 3).setBackground('#00ffff');
+  // A freshman leader (orange) and a student a person put in review.
+  senior.getRange(3, 3).setBackground('#ff9900');
+  f.sheets.get('Status changes').data.push([senior.data[3][1], '', 'review', 'Check this student']);
+  const result = f.adapter.sort('Not placed'), rows = f.sheets.get('PP Not placed').data;
+  assert.deepEqual(rows[0], ['Name', 'Grade', 'Status', 'Why']);
+  const row = name => rows.find(r => r[0] === name);
+  assert.deepEqual(row('Rivera, Sam'), ['Rivera, Sam', 12, 'Excluded', 'ExEd trip: Costa Rica']);
+  assert.deepEqual(row(senior.data[2][2]), [senior.data[2][2], 12, 'Excluded', 'Freshman leader']);
+  assert.deepEqual(row(senior.data[3][2]).slice(0, 3), [senior.data[3][2], 12, 'Needs review']);
+  assert.match(row(senior.data[3][2])[3], /^Needs review: .*Status changed: Check this student/);
+  assert.equal(rows.length - 1, result.summary.total - result.summary.placed);
+  // The uncolored row has no form, so it is placed after everyone else, with a warning.
+  assert.equal(row('Chen, Lee'), undefined);
+  assert.ok(f.sheets.get('PP Input check').data.some(r => r[0] === 'warning' && r[1] === 'DESTINATION_NOT_TRIP' && /"Chen, Lee" has "Japan" in the email column but isn't colored blue/.test(r[2])));
+  assert.ok(!f.sheets.get('PP Input check').data.some(r => r[1] === 'DESTINATION_NOT_TRIP' && /Rivera/.test(r[2])));
+  assert.ok(!blocks(f.sheets.get('PP Master list'), v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v)).flatMap(s => s.rows).some(r => r[0] === 'Rivera, Sam'));
+});
+
+test('a Gender row saying Nonbinary reaches the sheet as written: counted as neither in PP Projects, two counts in PP Input check, and never "unknown"', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare();
+  const rows = f.sheets.get('PP Students').data.slice(1), gender = f.sheets.get('Gender').data;
+  // Every student but the last has a row: the first says Nonbinary, the rest alternate.
+  rows.slice(0, -1).forEach((r, i) => gender.push([r[2], i ? (i % 2 ? 'Female' : 'Male') : 'Nonbinary']));
+  f.adapter.sort('Gender wording');
+  const run = saved(f), first = rows[0][0], a = run.assignments.get(first);
+  assert.equal(run.students.get(first).gender, 'Nonbinary');
+  assert.equal(f.sheets.get('PP Students').data.find(r => r[0] === first)[10], 'Nonbinary');
+  const input = f.sheets.get('PP Input check').data;
+  assert.ok(input.some(r => r[1] === 'GENDER_NOT_COUNTED' && r[2] === 'Of the students who can be placed, 1 has no gender on file and 1 is not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+  const p = run.projects.find(x => x.id === a.project1), row = f.sheets.get('PP Projects').data.find(r => r[1] === label(p));
+  const split = v => String(v).split(' / ').map(Number), sizes = p.finalLength === 'Minor' ? [row[4], row[5]] : [row[4]];
+  assert.equal(split(row[6])[0] + split(row[7])[0], sizes[0] - 1 - (run.assignments.get(rows[rows.length - 1][0]).project1 === p.id ? 1 : 0));
+  for (const tab of ['PP Check', 'PP Input check']) assert.ok(!f.sheets.get(tab).data.some(r => /unknown/i.test(String(r[2]))), tab);
+});
+
+test('every flag is either information or needs a decision, and anything not on the information list needs a decision', () => {
+  const f = fixture(true), decide = flag => f.adapter.needsDecision(flag);
+  const information = ['Historical project not on current list; no renamed-project equivalence was assumed.', 'Latest timestamped submission retained; 1 older submission(s) removed.',
+    'Green status: the app considered this student after everyone else.', 'Checked only one project, so placed after everyone else.', 'Checked no projects, so placed after everyone else.',
+    'Only one current project was checked; there is no priority bonus for a narrow choice.', 'Leading Cinderella, so placed there.', 'Previous-project exception: named leader of Cinderella.',
+    "In last year's project because of a lock.", "In last year's project because of a move by hand.", 'Moved to another group to balance the groups.',
+    'Swapped with a student in another group to balance the groups.', 'Swapped into this group so classmates who asked to work together could, with no worse fit.'];
+  const decisions = ["Said Major but placed in Minors they checked. Move them to a Major on their grade tab if you'd rather.", "Said Minor but placed in a Major they checked. Move them to two Minors on their grade tab if you'd rather.",
+    'Said Major but checked no running Major.', 'Said Minor but checked fewer than two running Minors.', 'Fit 6: review the placement.',
+    'Two students sent their forms from the same email. Check that both answers are right.', 'Valid email is missing; reconcile this roster entry.', 'No response: check.', 'No current running project was checked.',
+    // Not on either list, so they need a decision.
+    'This student asked for a Major but received Minors to reach the Minor student minimum.', 'Past project information is missing.', 'Moved because a classmate asked not to work with them.',
+    'Moved to another group because of a "Not with" friend request. Fit dropped 2 steps.', "Couldn't match last year's project: Robotics club.", "No answer about last year's project.",
+    'No recognized project Type.', 'No recognized UN goal.', "An older form from this email gave the name differently. Check it's the same student.", "Matched a hand-typed row by last name only. Check it's the same student.",
+    'Status changed: Back from the trip', 'The Gender tab lists this student with different values, so they are not counted as Male or Female.'];
+  assert.deepEqual(information.filter(decide), []);
+  assert.deepEqual(decisions.filter(x => !decide(x)), []);
+});
+
+test('PP Needs you and Review flags show only flags that need a decision; PP Students and the snapshot keep every flag; Check again keeps it that way', () => {
+  const f = fixture(true); f.adapter.practice();
+  const first = f.adapter.sort('Find the students'), plain = saved(f), students = [...plain.students.values()];
+  const clean = students.find(s => s.grade === 12 && !plain.assignments.get(s.id).flags.length && !s.issues.length);
+  const fit6 = students.find(s => plain.assignments.get(s.id).flags.join() === 'Fit 6: review the placement.' && !s.issues.length);
+  const review = students.find(s => s.grade === 11 && s !== fit6);
+  // A retired project as last year's answer adds only the historical-project issue, and a leader gets
+  // only the leader flag. A person puts a third student in review.
+  for (const s of [clean, fit6]) f.sheets.get(INPUT_TABS[s.grade]).data.find(r => r[1] === s.id)[3] = 'Escape Room';
+  // The leader leads a Major they checked, so the only new flag is the leader flag.
+  const leader = students.find(s => s.grade === 10 && s !== fit6 && !plain.assignments.get(s.id).flags.length && !s.issues.length && first.projects.some(p => p.finalLength === 'Major' && s.choices.includes(p.id)));
+  const led = first.projects.find(p => p.finalLength === 'Major' && leader.choices.includes(p.id));
+  f.sheets.get('Project choices').data.find(r => r[0] === led.id)[5] = leader.id;
+  f.sheets.get('Status changes').data.push([review.id, '', 'review', 'Check this student']);
+  f.adapter.sort('Decisions only');
+  const run = saved(f), needs = () => new Map(f.sheets.get('PP Needs you').data.slice(1).map(r => [r[0], r[5]]));
+  const reviewFlags = s => f.sheets.get(['', '', '', '', '', '', '', '', '', '', 'PP Sophomore', 'PP Junior', 'PP Senior'][s.grade]).data.find(r => r[0] === s.id)[8];
+  const historical = 'Historical project not on current list; no renamed-project equivalence was assumed.';
+  const check = () => {
+    const listed = needs();
+    assert.ok(!listed.has(clean.id)); assert.equal(reviewFlags(clean), '');
+    assert.equal(listed.get(fit6.id), 'Fit 6: review the placement.'); assert.equal(reviewFlags(fit6), 'Fit 6: review the placement.');
+    assert.ok(!listed.has(leader.id)); assert.equal(reviewFlags(leader), '');
+    assert.match(listed.get(review.id), /Status changed: Check this student/);
+  };
+  check();
+  // Nothing is lost: PP Students has the issue, and the snapshot has the leader's flag.
+  const issues = new Map(f.sheets.get('PP Students').data.slice(1).map(r => [r[0], r[12]]));
+  assert.equal(issues.get(clean.id), historical); assert.equal(issues.get(fit6.id), historical);
+  assert.deepEqual([...run.assignments.get(leader.id).flags], ['Leading ' + led.name + ', so placed there.']);
+  assert.equal(run.assignments.get(review.id).status, 'review');
+  // After someone else is moved by hand, Check again shows the same.
+  const other = placedRows(f, run).find(x => x.a.project2 && ![clean.id, fit6.id, leader.id].includes(x.row[0]));
+  moveToMajor(f, run, other); f.adapter.checkAgain();
+  check();
+});
+
+test('a project tab name turns a slash into " - " and never has two spaces in a row; a tab with the old name is removed on the next Sort', () => {
+  const f = fixture();
+  assert.equal(f.adapter.groupTabName(0, 'A / B'), 'PP Group 01 A - B');
+  assert.equal(f.adapter.groupTabName(1, 'Biomimicry / 3D Adaptive Tools'), 'PP Group 02 Biomimicry - 3D Adaptive Tools');
+  assert.equal(f.adapter.groupTabName(16, 'The People v. The System: Class Actions and Social Change'), 'PP Group 17 The People v. The System Class Actions and Social Change');
+  assert.equal(f.adapter.groupTabName(2, 'Trail Mix/Rock  Climbing'), 'PP Group 03 Trail Mix - Rock Climbing');
+  // A sheet from round 2: its tab used the old name, and PP Project tabs listed it.
+  f.source(); f.catalog[0].name = 'A / B';
+  f.sheets.set('PP Group 01 A   B', new Sheet('PP Group 01 A   B', [['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason']]));
+  f.sheets.set('PP Project tabs', new Sheet('PP Project tabs', [['Project ID', 'Project', 'Sheet', 'Length'], ['robotics', 'A / B', 'PP Group 01 A   B', 'Major']]));
+  f.adapter.sort('New tab names');
+  const groups = () => [...f.sheets.keys()].filter(n => n.startsWith('PP Group'));
+  assert.deepEqual(groups(), ['PP Group 01 A - B']);
+  assert.equal(f.sheets.get('PP Group 01 A - B').data[0][0], 'MAJ-A / B');
+  assert.deepEqual(f.sheets.get('PP Project tabs').data.slice(1).map(r => r[2]), ['PP Group 01 A - B']);
+  // Even when PP Project tabs no longer lists it, the old name goes.
+  f.sheets.set('PP Group 01 A   B', new Sheet('PP Group 01 A   B'));
+  f.sheets.get('PP Project tabs').data.splice(1);
+  f.adapter.sort('Old tab without a list');
+  assert.deepEqual(groups(), ['PP Group 01 A - B']);
+  // A tab for a project that no longer runs is removed too.
+  f.sheets.set('PP Group 02 Old project', new Sheet('PP Group 02 Old project'));
+  f.sheets.get('PP Project tabs').data.push(['old', 'Old project', 'PP Group 02 Old project', 'Major']);
+  f.adapter.sort('A project stopped running');
+  assert.deepEqual(groups(), ['PP Group 01 A - B']);
 });

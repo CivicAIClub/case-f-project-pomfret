@@ -100,9 +100,9 @@ test('checker treats each Minor week separately and warns on partial gender data
   const rows=students.map(x=>({studentId:x.id,status:'placed',project1:'m1',project2:'m2',fit1:5,fit2:5}));
   const checks=E.check(students,projects,rows,config({maxSize:2,targetSize:2,minorProjects:2,minorMin:3,minorTarget:3,minorMax:3}),{});
   assert.equal(checks.filter(x=>x.code==='OVER_CAPACITY').length,2);assert.ok(checks.some(x=>x.code==='UNDER_MINIMUM'));
-  // Each week is still checked using the students whose gender is known, and says how many aren't.
+  // Each week is still checked using the students listed as Male or Female, and says how many aren't.
   // All three are in m1 in week 1 and m2 in week 2; the two empty groups have nothing to report.
-  assert.deepEqual(checks.filter(x=>x.code==='GENDER_BALANCE').map(x=>x.message),['m1, week 1: 1 Female and 1 Male students (1 with unknown gender). Gender balancing is turned off in Settings.','m2, week 2: 1 Female and 1 Male students (1 with unknown gender). Gender balancing is turned off in Settings.']);
+  assert.deepEqual(checks.filter(x=>x.code==='GENDER_BALANCE').map(x=>x.message),['m1, week 1: 1 Male and 1 Female students (1 with no gender on file). Gender balancing is turned off in Settings.','m2, week 2: 1 Male and 1 Female students (1 with no gender on file). Gender balancing is turned off in Settings.']);
 });
 
 test('240-student synthetic run is complete, bounded and reproducible',()=>{
@@ -121,9 +121,14 @@ test('explain gives the fit, reason and flags the sort wrote, and a move by hand
   // asked for Minors but checked only a Major.
   const answerFlag=f=>/^Said (Major|Minor) but /.test(f);
   assert.deepEqual(r.assignments.find(a=>a.studentId==='minor').flags.filter(answerFlag),['Said Minor but checked fewer than two running Minors.']);
+  // The sort also says why a student is in a project they didn't check. The students in Minors
+  // checked only the Major a, so each week says so.
+  const missed='Their other picks run as Majors.';
   for(const a of r.assignments){
     const e=E.explain(students.find(x=>x.id===a.studentId),[a.project1,a.project2].filter(Boolean),r.projects,cfg,{},false);
-    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason,flags:a.flags.filter(f=>!answerFlag(f))});
+    assert.equal(a.reason.split(missed).length-1,a.project2?2:0,a.studentId);
+    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason.split(' '+missed).join(''),flags:a.flags.filter(f=>!answerFlag(f))});
+    if(a.project2)assert.equal(a.reason,E.explain(students.find(x=>x.id===a.studentId),[a.project1,a.project2],r.projects,cfg,{},false,false,[missed,missed]).reason);
   }
   const soph=r.assignments.find(a=>a.studentId==='soph');
   assert.ok(soph.flags.some(x=>/asked for a Major/.test(x)));
@@ -532,7 +537,7 @@ const genderRun=(far=false)=>{
 const genderMessages=r=>r.checks.filter(c=>c.code==='GENDER_BALANCE').map(c=>c.message);
 test('a group with two Female students is fixed by a swap that costs each student one step at most',()=>{
   const {students,projects,cfg}=genderRun(),off=E.sort(students,projects,{...cfg,balanceGender:false},{});
-  assert.deepEqual(genderMessages(off),['a: 2 Female and 6 Male students. Gender balancing is turned off in Settings.']);
+  assert.deepEqual(genderMessages(off),['a: 6 Male and 2 Female students. Gender balancing is turned off in Settings.']);
   const r=E.sort(students,projects,cfg,{}),inA=r.assignments.filter(a=>a.project1==='a').map(a=>students.find(x=>x.id===a.studentId).gender);
   assert.equal(inA.filter(g=>g==='Female').length,3); assert.deepEqual(genderMessages(r),[]);
   const swapped=r.assignments.filter(a=>/Swapped with a student in another group to balance the groups\./.test(a.reason));
@@ -542,15 +547,15 @@ test('a group with two Female students is fixed by a swap that costs each studen
 test('a gender fix that would cost two steps is refused and the group is reported',()=>{
   const {students,projects,cfg}=genderRun(true),r=E.sort(students,projects,cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,projects,{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 2 Female and 6 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 6 Male and 2 Female students. We couldn't fix it without breaking another rule."]);
 });
-test('students with unknown gender never move for gender, and with balanceGender FALSE the groups match a run without gender data',()=>{
+test('students not listed as Male or Female never move for gender, and with balanceGender FALSE the groups match a run without gender data',()=>{
   const {students,projects,cfg}=genderRun(),mixed=students.map((x,i)=>i%4===3?{...x,gender:'Unknown'}:x);
   const on=E.sort(mixed,projects,cfg,{}),off=E.sort(mixed,projects,{...cfg,balanceGender:false},{}),none=E.sort(mixed.map(x=>({...x,gender:null})),projects,{...cfg,balanceGender:false},{});
   for(const x of mixed.filter(x=>x.gender==='Unknown'))assert.equal(on.assignments.find(a=>a.studentId===x.id).project1,off.assignments.find(a=>a.studentId===x.id).project1);
   assert.ok(on.assignments.some((a,i)=>a.project1!==off.assignments[i].project1));
   assert.deepEqual(off.assignments,none.assignments);
-  assert.ok(genderMessages(off).length>0 && genderMessages(off).every(m=>/\(\d+ with unknown gender\)\. Gender balancing is turned off in Settings\.$/.test(m)));
+  assert.ok(genderMessages(off).length>0 && genderMessages(off).every(m=>/\(\d+ not listed as Male or Female\)\. Gender balancing is turned off in Settings\.$/.test(m)));
 });
 
 // Students who each checked one project, so each project's score is set by how many checked it.
@@ -668,7 +673,7 @@ test('a gender swap never moves a student out of a project they checked into one
   const students=[...Array.from({length:8},(_,i)=>s('a'+i,{types:['heart'],goals:['7'],gender:i<2?'Female':'Male'})),...Array.from({length:8},(_,i)=>s('b'+i,{choices:['b','z'],gender:i<5?'Female':'Male'}))];
   const r=E.sort(students,projects,cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,projects,{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 2 Female and 6 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 6 Male and 2 Female students. We couldn't fix it without breaking another rule."]);
   // A group with exactly one Male or one Female student comes before other broken groups.
   const majors=[{...p('a'),finalLength:'Major'},{...p('b'),finalLength:'Major'}],group=(id,f,m)=>[...Array(f).fill('Female'),...Array(m).fill('Male')].map((g,i)=>s(id+i,{gender:g}));
   const people=[...group('a',2,4),...group('b',5,1)],rows=people.map(x=>({studentId:x.id,status:'placed',project1:x.id[0],project2:null,fit1:1,fit2:null}));
@@ -687,7 +692,7 @@ test('a group with one Female student gets to three by swaps, because going from
   // cF0 checked a, and aM0 checked b and aM1 checked c.
   const students=[...team('a',1,7,{aM0:'b',aM1:'c'}),...team('b',4,4,{bF0:'a'}),...team('c',4,4,{cF0:'a'})];
   const cfg=config({minSize:4,targetSize:8,maxSize:8,projectCount:3,balanceGender:true}),off=E.sort(students,genderProjects(3),{...cfg,balanceGender:false},{});
-  assert.deepEqual(genderMessages(off),['a: 1 Female and 7 Male students. Gender balancing is turned off in Settings.']);
+  assert.deepEqual(genderMessages(off),['a: 7 Male and 1 Female students. Gender balancing is turned off in Settings.']);
   const r=E.sort(students,genderProjects(3),cfg,{});
   assert.equal(femaleIn(r,students,'a'),3); assert.deepEqual(genderMessages(r),[]);
   assert.deepEqual(['aM0','aM1','bF0','cF0'].map(id=>spot(r,id).project1),['b','c','a','a']);
@@ -711,7 +716,7 @@ test('a gender move never takes a group without a Max size above 12, or a group 
   let students=[...team('a',1,11),...team('b',6,6,{bF0:'a',bF1:'a'})],cfg=config({minSize:4,targetSize:8,maxSize:14,balanceGender:true});
   let r=E.sort(students,genderProjects(2),cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 1 Female and 11 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 11 Male and 1 Female students. We couldn't fix it without breaking another rule."]);
   // With a Max size of 14, a may grow to it.
   r=E.sort(students,genderProjects(2),cfg,{a:{maxSize:14}});
   assert.deepEqual([femaleIn(r,students,'a'),groupSize(r,'a'),spot(r,'bF0').project1,spot(r,'bF1').project1],[3,14,'a','a']);
@@ -727,7 +732,7 @@ test('a swap or move that takes one group from three Female students to two, to 
   const cfg=config({minSize:4,targetSize:8,maxSize:14,balanceGender:true});
   let students=[...team('a',1,7,{aM0:'b'}),...team('b',3,5,{bF0:'a'})],r=E.sort(students,genderProjects(2),cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 1 Female and 7 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 7 Male and 1 Female students. We couldn't fix it without breaking another rule."]);
   // With four Female students in b the total goes down, and bF0 moves.
   students=[...team('a',1,7,{aM0:'b'}),...team('b',4,4,{bF0:'a'})];r=E.sort(students,genderProjects(2),cfg,{});
   assert.deepEqual([spot(r,'bF0').project1,spot(r,'aM0').project1],['a','a']);
@@ -863,4 +868,79 @@ test('with checkedBeforeInferred FALSE, a swap that would move a third student o
   assert.deepEqual(['ann','u','bea','t'].map(id=>at(r,id).project1),['a','a','b','b']);
   assert.ok(!at(r,'t').reason.includes('Swapped into this group'));
   assert.deepEqual(r.friends.map(x=>x.result),['Not together']);
+});
+
+// Why a student is in a project they didn't check: the end of the reason says so.
+const missedRun=()=>({projects:[p('a','Major',{name:'Alpha'}),p('b','Major',{name:'Beta',types:['feet'],goals:['9']}),p('x','Major',{name:'Project X'}),p('y','Major',{name:'Project Y'})],cfg:config({maxSize:3,projectCount:2})});
+const reasonOf=(r,id)=>r.assignments.find(a=>a.studentId===id).reason;
+test('a student whose only pick isn\'t running is told so',()=>{
+  const {projects,cfg}=missedRun(),off={x:{run:false},y:{run:false}};
+  const r=E.sort([s('solo',{choices:['x']}),s('pair',{choices:['x','y']}),s('fan',{choices:['a','b']})],projects,cfg,off);
+  assert.match(reasonOf(r,'solo'),/^Did not check this project;.*\. None of their picks are running: Project X\.$/);
+  assert.match(reasonOf(r,'pair'),/ None of their picks are running: Project X, Project Y\.$/);
+  assert.doesNotMatch(reasonOf(r,'fan'),/running|full|last year/);
+});
+test('a student whose pick was last year\'s project is told so',()=>{
+  // Alpha, Beta and Project X run, and a student who checked each of Alpha and Beta keeps it running.
+  const {projects}=missedRun(),cfg=config({maxSize:3,projectCount:3});
+  const r=E.sort([s('repeat',{choices:['a','z'],previous:['a']}),s('twice',{choices:['a','b'],previous:['a','b'],types:['feet']}),s('fanA'),s('fanB',{choices:['b','z'],types:['feet'],goals:['9']})],projects,cfg,{y:{run:false}});
+  assert.deepEqual(r.projects.map(x=>x.id).sort(),['a','b','x']);
+  assert.notEqual(r.assignments.find(a=>a.studentId==='repeat').project1,'a');
+  assert.match(reasonOf(r,'repeat'),/ Alpha was their project last year\.$/);
+  assert.match(reasonOf(r,'twice'),/ Alpha and Beta were their projects last year\.$/);
+});
+test('a student whose picks were full is told so, and so is one who checked nothing',()=>{
+  // One seat in each project, and both checked Alpha: the senior gets it.
+  const {projects}=missedRun(),cfg=config({maxSize:1,targetSize:1,projectCount:2});
+  const r=E.sort([s('senior',{grade:12}),s('soph',{grade:10})],projects,cfg,{x:{run:false},y:{run:false}});
+  assert.equal(r.assignments.find(a=>a.studentId==='senior').project1,'a');
+  assert.match(reasonOf(r,'soph'),/^Did not check this project;.*\. Their other picks were full\.$/);
+  assert.doesNotMatch(reasonOf(r,'senior'),/full/);
+  const none=E.sort([s('none',{choices:[]}),s('fan')],projects,config({maxSize:3,projectCount:2}),{x:{run:false},y:{run:false}});
+  assert.match(reasonOf(none,'none'),/ They checked no projects\.$/);
+});
+test('for a Minor student the sentence goes with the week of the project they didn\'t check',()=>{
+  // Three Minors with two places each: two students do Minor 3, which nobody checked, in one week.
+  const projects=[p('m1','Minor'),p('m2','Minor'),p('m3','Minor',{types:['feet'],goals:['9']})],cfg=config({projectCount:3,minorProjects:3,minorMin:3,minorTarget:3,minorMax:3,maxSize:2,targetSize:2});
+  const r=E.sort(['x','y','z'].map(id=>s(id,{preference:'Minor',choices:['m1','m2']})),projects,cfg,{});
+  const inM3=r.assignments.filter(a=>a.project1==='m3'||a.project2==='m3');
+  assert.equal(inM3.length,2);
+  for(const a of inM3){
+    const [one,two]=a.reason.split(' Week 2: '),missed=a.project1==='m3'?one:two,kept=a.project1==='m3'?two:one;
+    assert.match(missed,/^(Week 1: )?Did not check this project;.*\. Their other picks were full\.$/);
+    assert.doesNotMatch(kept,/full|running|last year/);
+  }
+});
+
+test('a student listed as Nonbinary counts as neither Male nor Female, never moves for gender and is never called unknown; one with no Gender row has no gender on file',()=>{
+  // In a, a0 and a1 are Female and a2 is listed as Nonbinary. In b, b7 has no gender on file, which
+  // leaves b two Male students.
+  const {students,projects,cfg}=genderRun(),mixed=students.map(x=>x.id==='a2'?{...x,gender:'Nonbinary'}:x.id==='b7'?{...x,gender:null}:x);
+  const on=E.sort(mixed,projects,cfg,{}),off=E.sort(mixed,projects,{...cfg,balanceGender:false},{});
+  assert.deepEqual(genderMessages(off),['a: 5 Male and 2 Female students (1 not listed as Male or Female). Gender balancing is turned off in Settings.','b: 2 Male and 5 Female students (1 with no gender on file). Gender balancing is turned off in Settings.']);
+  assert.ok(on.assignments.some(a=>/balance the groups/.test(a.reason)));
+  assert.equal(spot(on,'a2').project1,spot(off,'a2').project1); assert.doesNotMatch(spot(on,'a2').reason,/balance the groups/);
+  assert.ok(on.checks.concat(off.checks).every(c=>!/unknown/i.test(c.message)));
+});
+
+test('a lock or a move by hand into last year\'s project is information with a flag; the sort putting a student there is still an error',()=>{
+  const projects=[p('a'),p('b','Major',{goals:['9']})],cfg=config({maxSize:3});
+  const students=[s('rep',{previous:['a']}),s('fan'),s('other',{choices:['b','z'],goals:['9']})];
+  // Locked into a, last year's project.
+  const r=E.sort(students,projects,cfg,{},{locks:[{email:'rep@example.org',name:'',project1:'a',project2:'',row:2}]}),rep=r.assignments.find(a=>a.studentId==='rep');
+  assert.deepEqual([rep.project1,rep.locked],['a',true]);
+  assert.ok(rep.flags.includes("In last year's project because of a lock."));
+  const repeat=r.checks.filter(c=>c.code==='PREVIOUS_PROJECT');
+  assert.deepEqual(repeat.map(c=>[c.severity,c.message,c.studentId]),[['info',"In last year's project because of a lock.",'rep']]);
+  assert.deepEqual(errors(r),[]);
+  // Moved there by hand, the way Check again sends it: information, and explain gives the flag.
+  const placed=r.projects,row=extra=>({studentId:'rep',status:'placed',project1:'a',project2:null,fit1:E.fit(students[0],projects[0]).tier,fit2:null,...extra});
+  const others=r.assignments.filter(a=>a.studentId!=='rep');
+  let checks=E.check(students,placed,[row({movedByHand:true}),...others],cfg,{}).filter(c=>c.code==='PREVIOUS_PROJECT');
+  assert.deepEqual(checks.map(c=>[c.severity,c.message]),[['info',"In last year's project because of a move by hand."]]);
+  assert.ok(E.explain(students[0],['a'],placed,cfg,{},true,'hand').flags.includes("In last year's project because of a move by hand."));
+  assert.ok(!E.explain(students[0],['b'],placed,cfg,{},true,'hand').flags.some(f=>/last year's project/.test(f)));
+  // The sort itself never does this, but if an assignment says so, it is an error.
+  checks=E.check(students,placed,[row({}),...others],cfg,{}).filter(c=>c.code==='PREVIOUS_PROJECT');
+  assert.deepEqual(checks.map(c=>c.severity),['error']);
 });
