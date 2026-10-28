@@ -387,6 +387,18 @@ var PPAdapter = (function () {
     });
     write('PP Projects', ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], rows);
   }
+  // Every student who isn't placed, by grade and last name, and why. A trip shows its destination
+  // when the hand-typed row gave one.
+  function writeNotPlaced(students, result) {
+    var byId = {};
+    result.assignments.forEach(function (a) { byId[a.studentId] = a; });
+    var rows = students.filter(function (s) { return !byId[s.id] || byId[s.id].status !== 'placed'; }).sort(function (a, b) { return b.grade - a.grade || byLastName(a, b); }).map(function (s) {
+      var a = byId[s.id] || { status: 'review', reason: 'No assignment returned.' };
+      var why = s.status === 'trip' ? 'ExEd trip' + (s.destination ? ': ' + s.destination : '') : s.status === 'leader' ? 'Freshman leader' : [a.reason].concat(s.status === 'review' ? s.issues || [] : []).filter(Boolean).join(' ');
+      return [s.name || s.id, s.grade, a.status === 'excluded' ? 'Excluded' : 'Needs review', why];
+    });
+    write('PP Not placed', ['Name', 'Grade', 'Status', 'Why'], rows);
+  }
   // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
   function writeSeniorsToCheck(students, result) {
     var byId = {}; students.forEach(function (s) { byId[s.id] = s; });
@@ -405,6 +417,7 @@ var PPAdapter = (function () {
     students.forEach(function (s) { studentsById[s.id] = s; });
     writeMasterList(students, result, info);
     writeProjectsOverview(students, result, info, config, decisions);
+    writeNotPlaced(students, result);
     writeGroupTabs(students, result, info);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {

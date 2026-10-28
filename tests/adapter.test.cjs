@@ -797,3 +797,27 @@ test('the sentence saying why a student didn\'t get a pick shows in PP Master li
   assert.equal(rowFor('PP Seniors to check', 0)[4], reason);
   assert.equal(f.sheets.get('PP Senior').data.find(r => r[0] === id)[7], reason);
 });
+
+test('PP Not placed lists every student who isn\'t placed and why, with a trip\'s destination from the email column; an uncolored destination is a PP Input check warning', () => {
+  const f = fixture(true); f.adapter.practice();
+  const senior = f.sheets.get('Senior'), typed = (name, where) => ['', where, name, '', '', '', '', '', '', ''];
+  // Hand-typed rows with a destination where the email goes: one blue, one not.
+  senior.data.push(typed('Rivera, Sam', 'COSTA RICA'), typed('Chen, Lee', 'JAPAN'));
+  senior.getRange(senior.data.length - 1, 3).setBackground('#00ffff');
+  // A freshman leader (orange) and a student a person put in review.
+  senior.getRange(3, 3).setBackground('#ff9900');
+  f.sheets.get('Status changes').data.push([senior.data[3][1], '', 'review', 'Check this student']);
+  const result = f.adapter.sort('Not placed'), rows = f.sheets.get('PP Not placed').data;
+  assert.deepEqual(rows[0], ['Name', 'Grade', 'Status', 'Why']);
+  const row = name => rows.find(r => r[0] === name);
+  assert.deepEqual(row('Rivera, Sam'), ['Rivera, Sam', 12, 'Excluded', 'ExEd trip: Costa Rica']);
+  assert.deepEqual(row(senior.data[2][2]), [senior.data[2][2], 12, 'Excluded', 'Freshman leader']);
+  assert.deepEqual(row(senior.data[3][2]).slice(0, 3), [senior.data[3][2], 12, 'Needs review']);
+  assert.match(row(senior.data[3][2])[3], /^Needs review: .*Status changed: Check this student/);
+  assert.equal(rows.length - 1, result.summary.total - result.summary.placed);
+  // The uncolored row has no form, so it is placed after everyone else, with a warning.
+  assert.equal(row('Chen, Lee'), undefined);
+  assert.ok(f.sheets.get('PP Input check').data.some(r => r[0] === 'warning' && r[1] === 'DESTINATION_NOT_TRIP' && /"Chen, Lee" has "Japan" in the email column but isn't colored blue/.test(r[2])));
+  assert.ok(!f.sheets.get('PP Input check').data.some(r => r[1] === 'DESTINATION_NOT_TRIP' && /Rivera/.test(r[2])));
+  assert.ok(!blocks(f.sheets.get('PP Master list'), v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v)).flatMap(s => s.rows).some(r => r[0] === 'Rivera, Sam'));
+});

@@ -7,7 +7,7 @@ class Range {
   constructor(sheet, row, col, rows = 1, cols = 1) { Object.assign(this, { sheet, row, col, rows, cols }); }
   cells(fn) { for (let i = 0; i < this.rows; i++) for (let j = 0; j < this.cols; j++) fn(this.row + i, this.col + j); }
   getValues() { return Array.from({ length: this.rows }, (_, i) => Array.from({ length: this.cols }, (_, j) => this.sheet.data[this.row + i - 1]?.[this.col + j - 1] ?? '')); }
-  getBackgrounds() { return this.getValues().map(row => row.map(() => '#ffffff')); }
+  getBackgrounds() { return this.getValues().map((row, i) => row.map((_, j) => this.sheet.colors.get((this.row + i) + ',' + (this.col + j)) || '#ffffff')); }
   setValues(values) { values.forEach((row, i) => row.forEach((v, j) => { const r = this.row + i - 1; this.sheet.data[r] ??= []; this.sheet.data[r][this.col + j - 1] = v; })); return this; }
   setValue(value) { return this.setValues([[value]]); }
   // Data validation lives beside the values, so clearContents keeps it, as in Sheets.
@@ -16,17 +16,18 @@ class Range {
   getDataValidations() { return Array.from({ length: this.rows }, (_, i) => Array.from({ length: this.cols }, (_, j) => this.sheet.validations.get((this.row + i) + ',' + (this.col + j)) || null)); }
   // Bold is kept per cell, and like Sheets, clearContents leaves it; clearFormats removes it.
   setFontWeight(weight) { this.cells((r, c) => { if (weight === 'bold') this.sheet.bold.add(r + ',' + c); else this.sheet.bold.delete(r + ',' + c); }); return this; }
-  setBackground() { return this; } setFontColor() { return this; } setWrap() { return this; }
+  setBackground(color) { this.cells((r, c) => this.sheet.colors.set(r + ',' + c, color)); return this; }
+  setFontColor() { return this; } setWrap() { return this; }
 }
 class Sheet {
-  constructor(name, data = []) { Object.assign(this, { name, data, rows: 1000, cols: 26, validations: new Map(), bold: new Set() }); }
+  constructor(name, data = []) { Object.assign(this, { name, data, rows: 1000, cols: 26, validations: new Map(), bold: new Set(), colors: new Map() }); }
   isBold(row, col = 1) { return this.bold.has(row + ',' + col); }
   getLastRow() { return this.data.length; }
   getDataRange() { return new Range(this, 1, 1, Math.max(1, this.data.length), Math.max(1, ...this.data.map(row => row.length))); }
   getRange(row, col, rows, cols) { return new Range(this, row, col, rows, cols); }
   getMaxRows() { return this.rows; } getMaxColumns() { return this.cols; }
   insertRowsAfter(_, n) { this.rows += n; } insertColumnsAfter(_, n) { this.cols += n; }
-  clearContents() { this.data = []; } clearFormats() { this.bold.clear(); } setFrozenRows() {} autoResizeColumns() {} setColumnWidth() {} getColumnWidth() { return 120; }
+  clearContents() { this.data = []; } clearFormats() { this.bold.clear(); this.colors.clear(); } setFrozenRows() {} autoResizeColumns() {} setColumnWidth() {} getColumnWidth() { return 120; }
   appendRow(row) { this.data.push(row); }
 }
 // The parts of SpreadsheetApp.newDataValidation() the adapter uses.

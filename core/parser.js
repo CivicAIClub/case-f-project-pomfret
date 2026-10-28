@@ -67,6 +67,15 @@ var PPParser = (function () {
     });
     return unique(result);
   }
+  // Hand-typed trip rows have the trip's destination, such as JAPAN, where the email goes. It is
+  // kept in normal capitals: "Costa Rica".
+  function destinationOf(value) {
+    var raw = text(value);
+    if (!raw || raw.indexOf('@') >= 0 || !/[a-z]/i.test(raw)) return '';
+    return raw.toLowerCase().split(/\s+/).map(function (word, i) {
+      return i && ['and', 'of', 'the'].indexOf(word) >= 0 ? word : word.replace(/(^|[-'])([a-z])/g, function (_, before, letter) { return before + letter.toUpperCase(); });
+    }).join(' ');
+  }
   function emailOf(value) {
     var email = text(value).toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
@@ -207,10 +216,11 @@ var PPParser = (function () {
       if (c.previous < 0) issues.push(issue('PREVIOUS_UNAVAILABLE', 'warning', sheetName + ': no previous-project question; repeat-project checks cannot be completed for this grade.'));
       table.values.slice(1).forEach(function (row, index) {
         if (!row.some(function (v) { return text(v) !== ''; })) return;
-        var source = {sheet:sheetName, row:index + 2}, email = emailOf(row[c.email]), name = text(row[c.name]);
+        var source = {sheet:sheetName, row:index + 2}, email = emailOf(row[c.email]), name = text(row[c.name]), destination = email ? '' : destinationOf(row[c.email]);
         var fill = table.backgrounds && table.backgrounds[index + 1] ? table.backgrounds[index + 1][c.name] : '';
         var status = COLORS[colorOf(fill)] || 'eligible', parsedTime = timestamp(row[c.timestamp]);
         var problems = [], identityInvalid = !name || !email;
+        if (destination && status !== 'trip') issues.push(issue('DESTINATION_NOT_TRIP', 'warning', (name ? '"' + name + '"' : 'This row') + ' has "' + destination + '" in the email column but isn\'t colored blue. Check whether this student is on an ExEd trip.', source));
         stats.rawRows++;
         if (!name) problems.push('Name is missing.');
         if (!email) problems.push('Valid email is missing; reconcile this roster entry.');
@@ -236,7 +246,7 @@ var PPParser = (function () {
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
           previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
-          celebration:c.celebration >= 0 ? celebrationOf(row[c.celebration]) : '',
+          celebration:c.celebration >= 0 ? celebrationOf(row[c.celebration]) : '', destination:destination,
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
           _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
@@ -322,6 +332,7 @@ var PPParser = (function () {
       } else if (target) {
         // The row's status color wins. A form still missing required answers stays in review.
         if (color && !(color === 'late' && target.status === 'review')) target.status = color;
+        if (row.destination && !target.destination) target.destination = row.destination;
         if (match.lastOnly) target.issues.push('Matched a hand-typed row by last name only. Check it\'s the same student.');
         kept.splice(kept.indexOf(row), 1);
         stats.mergedRows++;

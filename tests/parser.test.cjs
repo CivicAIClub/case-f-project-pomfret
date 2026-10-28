@@ -240,3 +240,17 @@ test('Celebration of Learning is read into celebration, keeping only the part be
   // A form without the question gives a blank.
   assert.equal(parser.prepare([table([row()])],projects).students[0].celebration,'');
 });
+
+test('a destination typed in the email column is kept for a trip row, also when it joins the student\'s form, and is a warning when the row isn\'t blue',()=>{
+  const typed=(name,where)=>['',where,name,'','','','','',''];
+  const result=parser.prepare([table([row('sam@example.org','Rivera, Sam'),typed('Rivera, Sam','COSTA RICA'),typed('Ortiz, Ana','TRINIDAD AND TOBAGO'),typed('Chen, Lee','JAPAN')],12,{1:'#00ffff',2:'#00ffff'})],projects);
+  const sam=result.students.find(s=>s.email==='sam@example.org'),ana=result.students.find(s=>s.name==='Ortiz, Ana'),lee=result.students.find(s=>s.name==='Chen, Lee');
+  assert.deepEqual([sam.status,sam.destination],['trip','Costa Rica']);
+  assert.deepEqual([ana.status,ana.destination],['trip','Trinidad and Tobago']);
+  assert.deepEqual([lee.status,lee.destination],['late','Japan']);
+  const warnings=result.issues.filter(i=>i.code==='DESTINATION_NOT_TRIP');
+  assert.deepEqual(warnings.map(i=>i.message),['"Chen, Lee" has "Japan" in the email column but isn\'t colored blue. Check whether this student is on an ExEd trip.']);
+  assert.equal(warnings[0].severity,'warning');
+  // An email, or a mistyped one with an @, is never a destination.
+  assert.equal(parser.prepare([table([row('jo@example.org','Example, Jo'),typed('Smith, Al','al@pomfret')],12,{1:'#00ffff'})],projects).students.find(s=>s.name==='Smith, Al').destination,'');
+});

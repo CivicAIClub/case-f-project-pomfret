@@ -674,6 +674,15 @@ var PPParser = (function () {
     });
     return unique(result);
   }
+  // Hand-typed trip rows have the trip's destination, such as JAPAN, where the email goes. It is
+  // kept in normal capitals: "Costa Rica".
+  function destinationOf(value) {
+    var raw = text(value);
+    if (!raw || raw.indexOf('@') >= 0 || !/[a-z]/i.test(raw)) return '';
+    return raw.toLowerCase().split(/\s+/).map(function (word, i) {
+      return i && ['and', 'of', 'the'].indexOf(word) >= 0 ? word : word.replace(/(^|[-'])([a-z])/g, function (_, before, letter) { return before + letter.toUpperCase(); });
+    }).join(' ');
+  }
   function emailOf(value) {
     var email = text(value).toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
@@ -814,10 +823,11 @@ var PPParser = (function () {
       if (c.previous < 0) issues.push(issue('PREVIOUS_UNAVAILABLE', 'warning', sheetName + ': no previous-project question; repeat-project checks cannot be completed for this grade.'));
       table.values.slice(1).forEach(function (row, index) {
         if (!row.some(function (v) { return text(v) !== ''; })) return;
-        var source = {sheet:sheetName, row:index + 2}, email = emailOf(row[c.email]), name = text(row[c.name]);
+        var source = {sheet:sheetName, row:index + 2}, email = emailOf(row[c.email]), name = text(row[c.name]), destination = email ? '' : destinationOf(row[c.email]);
         var fill = table.backgrounds && table.backgrounds[index + 1] ? table.backgrounds[index + 1][c.name] : '';
         var status = COLORS[colorOf(fill)] || 'eligible', parsedTime = timestamp(row[c.timestamp]);
         var problems = [], identityInvalid = !name || !email;
+        if (destination && status !== 'trip') issues.push(issue('DESTINATION_NOT_TRIP', 'warning', (name ? '"' + name + '"' : 'This row') + ' has "' + destination + '" in the email column but isn\'t colored blue. Check whether this student is on an ExEd trip.', source));
         stats.rawRows++;
         if (!name) problems.push('Name is missing.');
         if (!email) problems.push('Valid email is missing; reconcile this roster entry.');
@@ -843,7 +853,7 @@ var PPParser = (function () {
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
           previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
-          celebration:c.celebration >= 0 ? celebrationOf(row[c.celebration]) : '',
+          celebration:c.celebration >= 0 ? celebrationOf(row[c.celebration]) : '', destination:destination,
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
           _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
@@ -929,6 +939,7 @@ var PPParser = (function () {
       } else if (target) {
         // The row's status color wins. A form still missing required answers stays in review.
         if (color && !(color === 'late' && target.status === 'review')) target.status = color;
+        if (row.destination && !target.destination) target.destination = row.destination;
         if (match.lastOnly) target.issues.push('Matched a hand-typed row by last name only. Check it\'s the same student.');
         kept.splice(kept.indexOf(row), 1);
         stats.mergedRows++;
@@ -2136,6 +2147,18 @@ var PPAdapter = (function () {
     });
     write('PP Projects', ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], rows);
   }
+  // Every student who isn't placed, by grade and last name, and why. A trip shows its destination
+  // when the hand-typed row gave one.
+  function writeNotPlaced(students, result) {
+    var byId = {};
+    result.assignments.forEach(function (a) { byId[a.studentId] = a; });
+    var rows = students.filter(function (s) { return !byId[s.id] || byId[s.id].status !== 'placed'; }).sort(function (a, b) { return b.grade - a.grade || byLastName(a, b); }).map(function (s) {
+      var a = byId[s.id] || { status: 'review', reason: 'No assignment returned.' };
+      var why = s.status === 'trip' ? 'ExEd trip' + (s.destination ? ': ' + s.destination : '') : s.status === 'leader' ? 'Freshman leader' : [a.reason].concat(s.status === 'review' ? s.issues || [] : []).filter(Boolean).join(' ');
+      return [s.name || s.id, s.grade, a.status === 'excluded' ? 'Excluded' : 'Needs review', why];
+    });
+    write('PP Not placed', ['Name', 'Grade', 'Status', 'Why'], rows);
+  }
   // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
   function writeSeniorsToCheck(students, result) {
     var byId = {}; students.forEach(function (s) { byId[s.id] = s; });
@@ -2154,6 +2177,7 @@ var PPAdapter = (function () {
     students.forEach(function (s) { studentsById[s.id] = s; });
     writeMasterList(students, result, info);
     writeProjectsOverview(students, result, info, config, decisions);
+    writeNotPlaced(students, result);
     writeGroupTabs(students, result, info);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {
