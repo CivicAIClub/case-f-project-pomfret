@@ -1010,7 +1010,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PPParser;
  * that all possible plans fail. */
 var PPEngine = (function () {
   'use strict';
-  var defaults = Object.freeze({minSize:8,targetSize:11,maxSize:14,projectCount:23,minorProjects:8,minorMin:80,minorTarget:88,minorMax:96,allowMajorToMinor:true,checkedBeforeInferred:true,tieSeed:2026});
+  var defaults = Object.freeze({minSize:8,targetSize:11,maxSize:14,projectCount:23,minorProjects:8,minorMin:80,minorTarget:88,minorMax:96,allowMajorToMinor:true,checkedBeforeInferred:true,tieSeed:2026,useFriendRequests:false});
   function arr(x) { return Array.isArray(x) ? x : []; }
   function eligible(s) { return s.status === 'eligible' || s.status === 'late'; }
   function compare(a,b) { return String(a).localeCompare(String(b),'en'); }
@@ -1021,7 +1021,7 @@ var PPEngine = (function () {
     if (v.minSize < 1 || v.minSize > v.targetSize || v.targetSize > v.maxSize || v.maxSize > 14) throw new Error('Choose group sizes from 1 to 14. The minimum cannot exceed the target, and the target cannot exceed the maximum.');
     if (v.projectCount < 1 || v.minorProjects > v.projectCount) throw new Error('Choose at least one project in total. The number of Minors cannot exceed that total.');
     if (v.minorMin > v.minorTarget || v.minorTarget > v.minorMax) throw new Error('The Minor student target must fall between the minimum and maximum.');
-    ['allowMajorToMinor','checkedBeforeInferred'].forEach(function(k) { if (typeof v[k] !== 'boolean') throw new Error(k+' must be TRUE or FALSE.'); });
+    ['allowMajorToMinor','checkedBeforeInferred','useFriendRequests'].forEach(function(k) { if (typeof v[k] !== 'boolean') throw new Error(k+' must be TRUE or FALSE.'); });
     return v;
   }
   function overlap(a,b) { return arr(a).filter(function(x) {return arr(b).indexOf(x)>=0;}); }
@@ -1278,13 +1278,159 @@ var PPEngine = (function () {
     var oriented=orientWeeks(np,minorProjects,run,weeks);
     var minorIds={};groups.minor.forEach(function(s){minorIds[s.id]=true;});
     return students.map(function(s){if(locked[s.id])return lockedAssignment(s,locked[s.id],projects,cfg,choices);
-      var a=emptyAssignment(s);if(!eligible(s))return a;var pair=minorIds[s.id]?oriented[s.id]:mp[s.id];if(!pair||pair.length!==(minorIds[s.id]?2:1))return a;
-      var placement=explain(s,pair,projects,cfg,choices,!!leading[s.id]);a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;a.fit1=placement.fit1;a.fit2=placement.fit2;a.reason=placement.reason;a.flags=placement.flags;
-      if(leading[s.id])a.flags.unshift('Leading '+leading[s.id].name+', so placed there.');else if(checkedCount(s)<=1)a.flags.push(checkedCount(s)?'Checked only one project, so placed after everyone else.':'Checked no projects, so placed after everyone else.');return a;
+      var pair=minorIds[s.id]?oriented[s.id]:mp[s.id];
+      return eligible(s)&&pair&&pair.length===(minorIds[s.id]?2:1)?describe(s,pair,projects,cfg,choices,run):emptyAssignment(s);
     });
   }
+  // The fit, reason and flags the sort writes for a student placed in these projects.
+  function describe(s,pair,projects,cfg,choices,run){
+    var a=emptyAssignment(s),lead=run.leading[s.id],placement=explain(s,pair,projects,cfg,choices,!!lead);
+    a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;a.fit1=placement.fit1;a.fit2=placement.fit2;a.reason=placement.reason;a.flags=placement.flags;
+    if(lead)a.flags.unshift('Leading '+lead.name+', so placed there.');else if(checkedCount(s)<=1)a.flags.push(checkedCount(s)?'Checked only one project, so placed after everyone else.':'Checked no projects, so placed after everyone else.');
+    return a;
+  }
+  // Rows from the reviewed Friend requests tab. Only rows marked Use count, and students are matched
+  // by email. With useFriendRequests off nothing is applied, and every row says so.
+  function resolveFriends(students,rows,cfg){
+    var byEmail={},issues=[],requests=[],report=[];
+    students.forEach(function(s){var k=key(s.email);if(k)(byEmail[k]=byEmail[k]||[]).push(s);});
+    arr(rows).forEach(function(r){
+      var line={row:r.row,name:String(r.name||'').trim(),classmate:String(r.classmate||'').trim(),request:String(r.request||'').trim(),result:'Not applied',why:''};
+      var kind=plain(r.request)==='with'?'With':plain(r.request)==='not with'?'Not with':null,a=byEmail[key(r.email)]||[],b=byEmail[key(r.classmateEmail)]||[];
+      if(!line.name&&!line.classmate&&!key(r.email)&&!key(r.classmateEmail))return;
+      report.push(line);
+      if(!cfg.useFriendRequests)line.why='Friend requests are turned off in Settings';
+      else if(r.use!==true)line.why='Use is not checked';
+      else if(!key(r.email)||!key(r.classmateEmail))line.why='Email or classmate email is blank';
+      else if(!kind)line.why='Request must be With or Not with';
+      else if(a.length>1||b.length>1){line.why='Two students share this email';issues.push(note('FRIEND_SHARED_EMAIL','warning','Two students share this email, so this friend request was skipped.',{source:{sheet:'Friend requests',row:r.row}}));}
+      else if(!a.length)line.why='No student has this email';
+      else if(!b.length)line.why='No student has the classmate email';
+      else if(a[0]===b[0])line.why="A student can't name themselves";
+      else{line.request=kind;line.name=line.name||a[0].name;line.classmate=line.classmate||b[0].name;requests.push({from:a[0].id,to:b[0].id,kind:kind,named:r.namedEachOther===true,line:line});}
+    });
+    requests.forEach(function(q){q.mutual=q.kind==='With'&&(q.named||requests.some(function(o){return o.kind==='With'&&o.from===q.to&&o.to===q.from;}));});
+    return {requests:requests,report:report,issues:issues};
+  }
+  // Two placements share a group: the same Major, or the same Minor in the same week.
+  function shareGroup(a,b){return !!a&&!!b&&a.status==='placed'&&b.status==='placed'&&(a.project1===b.project1||(!!a.project2&&a.project2===b.project2));}
+  // After the main sort: keep "Not with" pairs apart, then bring together students who asked to work
+  // with a classmate, wherever every rule still holds. Locked students and leaders never move. With
+  // move false it only reports where each request stands, for Check again.
+  function arrange(students,projects,assignments,cfg,choices,run,requests,move){
+    var byId={},project={},where={},track={},size={},fixed={},notes={},why={},joined=[],apart=[],stuck={},priority=priorityOrder(run);
+    students.forEach(function(s){byId[s.id]=s;});projects.forEach(function(p){project[p.id]=p;});
+    assignments.forEach(function(a){
+      var one=project[a.project1],two=project[a.project2];
+      if(a.status!=='placed'||!one)return;
+      if(one.finalLength==='Major'&&!a.project2){where[a.studentId]=[a.project1,null];track[a.studentId]='Major';}
+      else if(one.finalLength==='Minor'&&two&&two.finalLength==='Minor'&&two.id!==one.id){where[a.studentId]=[a.project1,a.project2];track[a.studentId]='Minor';}
+      else return;
+      if(a.locked)fixed[a.studentId]='Locked in place by hand';else if(run.leading&&run.leading[a.studentId])fixed[a.studentId]='Leads a project, so stays in place';
+    });
+    function group(id,w){return track[id]==='Major'?where[id][0]:where[id][w]+'|'+w;}
+    function groupsOf(id){return track[id]==='Major'?[group(id,0)]:[group(id,0),group(id,1)];}
+    Object.keys(where).forEach(function(id){groupsOf(id).forEach(function(g){size[g]=(size[g]||0)+1;});});
+    function together(x,y){return !!where[x]&&!!where[y]&&track[x]===track[y]&&groupsOf(x).some(function(g){return groupsOf(y).indexOf(g)>=0;});}
+    function tier(id,pid){return fit(byId[id],project[pid],cfg).tier;}
+    function involving(ids,kind){return requests.filter(function(q){return q.kind===kind&&(ids.indexOf(q.from)>=0||ids.indexOf(q.to)>=0);});}
+    function name(id){return byId[id].name||id;}
+    function remark(id,kind,text){var n=notes[id]=notes[id]||{reason:[],flags:[]};n[kind].push(text);}
+    // Make the changes if every rule still holds; otherwise undo them and say which rule stopped it.
+    // drop(id) is how many steps of fit that student may lose. A dry run always undoes.
+    function attempt(changes,drop,keepMet,dry){
+      var ids=changes.map(function(c){return c.id;}),stop=null,undo=[],before={};
+      changes.some(function(c){
+        var w=track[c.id]==='Major'?0:c.w,from=where[c.id][w];
+        if(fixed[c.id])stop=fixed[c.id];
+        else if(!allowed(byId[c.id],project[c.to],choices))stop="Would put a student in last year's project";
+        else if(track[c.id]==='Minor'&&where[c.id][1-w]===c.to)stop='Would give a Minor student the same project twice';
+        else if(tier(c.id,c.to)-tier(c.id,from)>drop(c.id))stop=drop(c.id)>0?'Would drop more than one step in fit':'Would give another student a worse fit';
+        return !!stop;
+      });
+      if(stop)return stop;
+      var met=keepMet?involving(ids,'With').filter(function(q){return together(q.from,q.to);}):[],apartBefore=involving(ids,'Not with').filter(function(q){return !together(q.from,q.to);});
+      changes.forEach(function(c){var w=track[c.id]==='Major'?0:c.w,old=group(c.id,w),now;undo.push({id:c.id,w:w,from:where[c.id][w]});if(!(old in before))before[old]=size[old];size[old]--;where[c.id][w]=c.to;now=group(c.id,w);if(!(now in before))before[now]=size[now]||0;size[now]=(size[now]||0)+1;});
+      Object.keys(before).some(function(g){var n=size[g]||0,p=project[g.split('|')[0]];if(n>before[g]&&n>limit(p,cfg))stop='A group would go over the maximum';else if(n<before[g]&&n<cfg.minSize)stop='A group would go under the minimum';return !!stop;});
+      if(!stop&&apartBefore.some(function(q){return together(q.from,q.to);}))stop='Would put a student with a classmate they asked not to work with';
+      if(!stop&&met.some(function(q){return !together(q.from,q.to);}))stop='Would split up another friend request';
+      if(stop||dry)undo.reverse().forEach(function(u){var g=group(u.id,u.w);size[g]--;where[u.id][u.w]=u.from;g=group(u.id,u.w);size[g]=(size[g]||0)+1;});
+      return stop;
+    }
+    var any=function(){return Infinity;};
+    // "Not with" is a hard rule. Move whichever student loses less fit to their best other group;
+    // on a tie, the one placed later. This may cost more than one step, so the move is flagged.
+    if(move)requests.filter(function(q){return q.kind==='Not with';}).forEach(function(q){
+      for(var round=0;round<2&&together(q.from,q.to);round++){
+        var shared=groupsOf(q.from).filter(function(g){return groupsOf(q.to).indexOf(g)>=0;})[0];
+        var best=[q.from,q.to].map(function(id){
+          var w=track[id]==='Major'?0:Number(shared.split('|')[1]),here=where[id][w];
+          return projects.filter(function(p){return p.finalLength===track[id]&&p.id!==here;}).map(function(p){return {id:id,w:w,to:p.id,loss:tier(id,p.id)-tier(id,here)};}).sort(function(a,b){return a.loss-b.loss||compare(a.to,b.to);}).filter(function(o){return !attempt([o],any,false,true);})[0]||null;
+        });
+        var pick=!best[0]||!best[1]?best[0]||best[1]:best[0].loss!==best[1].loss?(best[0].loss<best[1].loss?best[0]:best[1]):priority(byId[q.from],byId[q.to])>0?best[0]:best[1];
+        if(!pick){stuck[q.line.row]=fixed[q.from]||fixed[q.to]||'Could not be moved apart without breaking another rule';break;}
+        attempt([pick],any,false,false);apart.push(q);
+        remark(pick.id,'flags','Moved to another group because of a "Not with" friend request. '+(pick.loss>0?'Fit dropped '+pick.loss+(pick.loss===1?' step.':' steps.'):'Fit did not drop.'));
+      }
+    });
+    // The friend pass: pairs who named each other first, then seniors, juniors and sophomores in tie
+    // order. Each student not yet with a classmate they named tries three changes and keeps the first
+    // that works.
+    var withs=requests.filter(function(q){return q.kind==='With';});
+    function named(id){return withs.filter(function(q){return q.from===id;});}
+    function mutual(id){return named(id).some(function(q){return q.mutual;});}
+    if(move)withs.map(function(q){return q.from;}).filter(function(id,i,all){return all.indexOf(id)===i;}).sort(function(a,b){return Number(mutual(b))-Number(mutual(a))||byId[b].grade-byId[a].grade||run.tie.ids(a,b);}).forEach(function(id){
+      var mine=named(id).filter(function(q){return where[q.from]&&where[q.to]&&track[q.from]===track[q.to];}).sort(function(a,b){return Number(b.mutual)-Number(a.mutual)||run.tie.ids(a.to,b.to);});
+      if(!mine.length||mine.some(function(q){return together(q.from,q.to);}))return;
+      var weeks=track[id]==='Major'?[0]:[0,1],first=null,done=null;
+      function works(stop){if(stop&&!first)first=stop;return !stop;}
+      function only(who){return function(x){return x===who?1:0;};}
+      // 1. Move the student into a named classmate's group.
+      mine.some(function(q){return weeks.some(function(w){return works(attempt([{id:id,w:w,to:where[q.to][w]}],only(id),true,false))&&(done={mover:id,other:q.to,q:q});});});
+      // 2. If they named each other, move the classmate into the student's group.
+      if(!done)mine.filter(function(q){return q.mutual;}).some(function(q){return weeks.some(function(w){return works(attempt([{id:q.to,w:w,to:where[id][w]}],only(q.to),true,false))&&(done={mover:q.to,other:id,q:q});});});
+      // 3. Swap the student with a third student in a named classmate's group, in the same week and track.
+      if(!done)mine.some(function(q){return weeks.some(function(w){
+        var target=where[q.to][w],here=where[id][w];
+        return Object.keys(where).filter(function(t){return t!==id&&t!==q.to&&track[t]===track[id]&&where[t][w]===target;}).sort(run.tie.ids).some(function(t){return works(attempt([{id:id,w:w,to:target},{id:t,w:w,to:here}],only(id),true,false))&&(done={mover:id,other:q.to,q:q,third:t});});
+      });});
+      if(!done){why[id]=first;return;}
+      joined.push(done.q);withs.forEach(function(o){if(done.q.mutual&&o.from===done.q.to&&o.to===done.q.from)joined.push(o);});remark(done.mover,'reason','Moved to be with '+name(done.other)+', who they asked to work with.');
+      if(done.third)remark(done.third,'reason','Swapped into this group so classmates who asked to work together could, with no worse fit.');
+    });
+    function status(s,who){return s.status==='trip'?who+' is on an ExEd trip':s.status==='leader'?who+' is a freshman leader':who+' is not placed';}
+    function whyNot(q){
+      var a=byId[q.from],b=byId[q.to];
+      if(!where[q.from])return status(a,'This student');
+      if(!where[q.to])return status(b,'Classmate');
+      if(track[q.from]!==track[q.to])return a.preference!=='Not sure'&&b.preference!=='Not sure'&&a.preference!==b.preference?'One asked for a Major and the other for Minors':'One is in a Major and the other is in Minors';
+      if(named(q.from).some(function(o){return together(o.from,o.to);}))return 'Already with another classmate they named';
+      return why[q.from]||(move?'No change worked without breaking a rule':'Not in the same group');
+    }
+    requests.forEach(function(q){
+      var line=q.line,now=together(q.from,q.to);line.result=now?'Together':'Not together';
+      if(q.kind==='With')line.why=now?(joined.indexOf(q)>=0?'Moved to be together':'In the same group'):whyNot(q);
+      else line.why=now?stuck[line.row]||(move?'Could not be moved apart without breaking another rule':'In the same group'):apart.indexOf(q)>=0?'Moved apart':'Kept apart';
+    });
+    var askers=withs.map(function(q){return q.from;}).filter(function(id,i,all){return all.indexOf(id)===i;});
+    var summary={used:!!cfg.useFriendRequests,withMet:withs.filter(function(q){return q.line.result==='Together';}).length,withUnmet:withs.filter(function(q){return q.line.result!=='Together';}).length,
+      studentsWith:askers.length,studentsMet:askers.filter(function(id){return named(id).some(function(q){return q.line.result==='Together';});}).length,notWithBroken:requests.filter(function(q){return q.kind==='Not with'&&q.line.result==='Together';}).length};
+    var out=assignments.map(function(a){
+      var w=where[a.studentId];
+      if(!w||!notes[a.studentId]&&w[0]===a.project1&&w[1]===(a.project2||null))return a;
+      var b=describe(byId[a.studentId],w[1]?w:[w[0]],projects,cfg,choices,run),n=notes[a.studentId]||{reason:[],flags:[]};
+      if(n.reason.length)b.reason+=' '+n.reason.join(' ');b.flags=b.flags.concat(n.flags);return b;
+    });
+    return {assignments:out,summary:summary};
+  }
+  // Where each friend request stands for a set of placements, without moving anyone.
+  function friendReport(students,projects,assignments,input,rows,choices){
+    var cfg=settings(input),info=resolveFriends(students,rows,cfg),run={leading:{},tie:tieOrder(students,cfg)};run.last=function(s){return placedLast(s,run);};
+    var result=arrange(students,projects,assignments,cfg,choices,run,info.requests,false);
+    return {rows:info.report,summary:result.summary,issues:info.issues};
+  }
   // A lock is kept even when it breaks a rule. Each broken rule is an error that names the student.
-  function lockProblems(projects,assignments,cfg,run){
+  function lockProblems(projects,assignments,cfg,run,requests){
     var out=[],byId={},sizes={};projects.forEach(function(p){byId[p.id]=p;sizes[p.id]=[0,0];});
     assignments.forEach(function(a){if(a.status!=='placed')return;if(sizes[a.project1])sizes[a.project1][0]++;if(a.project2&&sizes[a.project2])sizes[a.project2][1]++;});
     assignments.forEach(function(a){
@@ -1296,19 +1442,21 @@ var PPEngine = (function () {
       else if(first.finalLength==='Minor'&&!(p1&&p2))out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has a Minor in only one week. A Minor student needs two different Minors.",extra));
       else if(first.finalLength==='Minor'&&p1.id===p2.id)out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has "+p1.name+' in both weeks. A Minor student needs two different Minors.',extra));
       [p1,p2].forEach(function(p,w){if(!p)return;var week=p.finalLength==='Major'?0:w,size=sizes[p.id][week],cap=limit(p,cfg);if(size>cap)out.push(note('LOCK_BREAKS_RULE','error',who+' is locked into '+p.name+(p.finalLength==='Minor'?', week '+(w+1):'')+', which has '+size+' students, over the maximum of '+cap+'.',{studentId:st.id,projectId:p.id}));});
+      arr(requests).forEach(function(q){var other=q.from===a.studentId?q.to:q.to===a.studentId?q.from:null,b=assignments.filter(function(x){return x.studentId===other;})[0];if(q.kind==='Not with'&&other&&shareGroup(a,b))out.push(note('LOCK_BREAKS_RULE','error',who+' is locked into a group with a classmate in a "Not with" request.',extra));});
     });
     return out;
   }
   function counts(projects,assignments){var out={};projects.forEach(function(p){out[p.id]=[0,0];});assignments.forEach(function(a){if(a.status!=='placed')return;if(out[a.project1])out[a.project1][0]++;if(out[a.project2])out[a.project2][1]++;});return out;}
-  // context is optional: {previous: last run's assignments, locks: rows from Locked placements}.
+  // context is optional: {previous: last run's assignments, locks: rows from Locked placements,
+  // friends: rows from Friend requests}. Old callers that pass four arguments keep working.
   function sort(students,projects,input,choices,context){
     context=context||{};
     var cfg=settings(input),seen={};students.forEach(function(s){if(!s.id||seen[s.id])throw new Error('Each student needs their own ID.');seen[s.id]=true;if(![10,11,12].includes(s.grade))throw new Error('Every student must have grade 10, 11, or 12.');});
     var plan=propose(students,projects,cfg,choices),selected=plan.projects,issues=plan.issues.slice(),scores={},run={tie:tieOrder(students,cfg),allProjects:projects,byId:{},names:{},previous:{}};interest(students,projects).forEach(function(r){scores[r.projectId]=r.checked*3+r.aligned;});
     students.forEach(function(s){run.byId[s.id]=s;});projects.forEach(function(p){run.names[p.id]=p.name;});
     arr(context.previous).forEach(function(a){if(a&&run.byId[a.studentId])run.previous[a.studentId]={project1:a.project1||null,project2:a.project2||null};});
-    var blocked=issues.some(function(x){return x.severity==='error';}),lockInfo=resolveLocks(students,projects,context.locks),lockProjects={};
-    run.locks=lockInfo.byStudent;issues=issues.concat(lockInfo.issues);
+    var blocked=issues.some(function(x){return x.severity==='error';}),lockInfo=resolveLocks(students,projects,context.locks),lockProjects={},friends=resolveFriends(students,context.friends,cfg),arranged=null;
+    run.locks=lockInfo.byStudent;issues=issues.concat(lockInfo.issues,friends.issues);
     Object.keys(run.locks).forEach(function(id){[run.locks[id].project1,run.locks[id].project2].forEach(function(pid){if(pid)lockProjects[pid]=true;});});
     var assignments;
     if(blocked)assignments=students.map(emptyAssignment);
@@ -1323,13 +1471,16 @@ var PPEngine = (function () {
         if(!candidate){issues=issues.concat(passIssues);break;}
         issues.push(note('PROJECT_CUT','warning',candidate.name+' was cut because a group was below '+cfg.minSize+' students. The app ran placements again.',{projectId:candidate.id}));selected=selected.filter(function(p){return p.id!==candidate.id;});
       }
-      issues=issues.concat(lockProblems(selected,assignments,cfg,run));
+      var arranged=arrange(students,selected,assignments,cfg,choices,run,friends.requests,true);assignments=arranged.assignments;
+      issues=issues.concat(lockProblems(selected,assignments,cfg,run,friends.requests));
     }
-    var checks=check(students,selected,assignments,cfg,choices),summary=summarize(students,selected,assignments);
+    var checks=check(students,selected,assignments,cfg,choices,context),summary=summarize(students,selected,assignments);
+    summary.friends=arranged?arranged.summary:{used:!!cfg.useFriendRequests,withMet:0,withUnmet:0,studentsWith:0,studentsMet:0,notWithBroken:0};
     // Bind run provenance to decision inputs, without reading free-text comments.
     var inputs=students.map(function(s){return {id:s.id,grade:s.grade,status:s.status,preference:s.preference,choices:arr(s.choices).slice().sort(compare),types:arr(s.types).slice().sort(compare),goals:arr(s.goals).slice().sort(compare),previous:arr(s.previous).slice().sort(compare),previousKnown:s.previousKnown!==false,gender:s.gender||null};}).sort(function(a,b){return compare(a.id,b.id);});
     var locks={};Object.keys(run.locks).forEach(function(id){locks[id]=[run.locks[id].project1,run.locks[id].project2];});
-    return {assignments:assignments,projects:selected,issues:issues,checks:checks,summary:summary,fingerprint:fingerprint({settings:cfg,choices:choices||{},inputs:inputs,projects:selected,locks:locks,previous:run.previous,assignments:assignments.slice().sort(function(a,b){return compare(a.studentId,b.studentId);})})};
+    var used=friends.requests.map(function(q){return [q.from,q.to,q.kind,q.mutual];});
+    return {assignments:assignments,projects:selected,issues:issues,checks:checks,summary:summary,friends:friends.report,fingerprint:fingerprint({settings:cfg,choices:choices||{},inputs:inputs,projects:selected,locks:locks,previous:run.previous,friends:used,assignments:assignments.slice().sort(function(a,b){return compare(a.studentId,b.studentId);})})};
   }
   // Counts for PP Summary. For each grade: placed students, whether they got projects they checked
   // (a Minor student counts both weeks, one week or neither), and placements at each fit.
@@ -1342,7 +1493,7 @@ var PPEngine = (function () {
       [a.fit1,a.fit2].forEach(function(t){if(t!=null){s.fitCounts[t]=(s.fitCounts[t]||0)+1;g.fits[t]=(g.fits[t]||0)+1;totals[st.grade][0]+=t;totals[st.grade][1]++;}});});
     Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});return s;
   }
-  function check(students,projects,assignments,input,choices){
+  function check(students,projects,assignments,input,choices,context){
     var cfg=settings(input),out=[],studentMap={},projectMap={},seen={},members={},validStatuses=['placed','excluded','review'];
     students.forEach(function(s){if(studentMap[s.id])out.push(note('DUPLICATE_STUDENT','error','Duplicate source student ID.',{studentId:s.id}));studentMap[s.id]=s;});
     projects.forEach(function(p){if(projectMap[p.id])out.push(note('DUPLICATE_PROJECT','error','Duplicate selected project ID.',{projectId:p.id}));projectMap[p.id]=p;members[p.id]=[[],[]];if(p.enabled===false)out.push(note('CANCELLED_PROJECT','error','Cancelled project is selected.',{projectId:p.id}));if(!['Major','Minor'].includes(p.finalLength))out.push(note('UNRESOLVED_LENGTH','error','Choose whether this project runs as a Major or Minor.',{projectId:p.id}));});
@@ -1367,11 +1518,13 @@ var PPEngine = (function () {
     Object.keys(choices||{}).forEach(function(id){if((choiceFor(choices,id).mustRun||choiceFor(choices,id).run===true)&&!projectMap[id])out.push(note('REQUIRED_PROJECT_MISSING','error','A required project is not running.',{projectId:id}));});
     var summary=summarize(students,projects,assignments);if(projects.length!==cfg.projectCount)out.push(note('PROJECT_COUNT','warning','Running '+projects.length+' projects; requested '+cfg.projectCount+'.'));if(summary.minorProjectCount!==cfg.minorProjects)out.push(note('MINOR_PROJECT_COUNT','warning','Running '+summary.minorProjectCount+' Minor projects; requested '+cfg.minorProjects+'.'));if(summary.minorStudents<cfg.minorMin||summary.minorStudents>cfg.minorMax)out.push(note('MINOR_STUDENT_COUNT','warning','Placed '+summary.minorStudents+' Minor students; requested range '+cfg.minorMin+' to '+cfg.minorMax+'.'));
     if(!students.some(function(s){return eligible(s)&&s.gender;}))out.push(note('NO_GENDER_DATA','warning','The app could not check gender balance because no gender data was supplied.'));
+    // "Not with" is a hard rule, including after moves by hand.
+    if(context&&context.friends){var placedBy={};assignments.forEach(function(a){placedBy[a.studentId]=a;});resolveFriends(students,context.friends,cfg).requests.forEach(function(q){if(q.kind==='Not with'&&shareGroup(placedBy[q.from],placedBy[q.to]))out.push(note('NOT_WITH_TOGETHER','error',(studentMap[q.from].name||q.from)+' and '+(studentMap[q.to].name||q.to)+' are in the same group, but one asked not to work with the other.',{studentId:q.from}));});}
     var senior=summary.byGrade[12].meanFit,junior=summary.byGrade[11].meanFit,soph=summary.byGrade[10].meanFit;if((senior!=null&&junior!=null&&senior>junior)||(junior!=null&&soph!=null&&junior>soph))out.push(note('GRADE_FIT_REVIEW','warning','Average interest matches do not follow the intended senior, junior, sophomore order. Check group limits and students marked green. Giving older grades priority does not guarantee this order.'));
     return out;
   }
   function fingerprint(value){function stable(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(stable).join(',')+']';return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';}var str=stable(value),h=2166136261;for(var i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return ('00000000'+(h>>>0).toString(16)).slice(-8);}
-  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,summarize:summarize,locks:resolveLocks,fingerprint:fingerprint};
+  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,summarize:summarize,locks:resolveLocks,friends:friendReport,fingerprint:fingerprint};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
 
@@ -1391,10 +1544,12 @@ var PPAdapter = (function () {
     minorMin: 'Minimum students taking two Minors.', minorTarget: 'Target students taking two Minors.',
     minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Let Major-preference students take Minors only while Minors are below minorMin; each move is flagged.',
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.',
-    tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.'
+    tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.',
+    useFriendRequests: 'TRUE uses the reviewed Friend requests tab: "Not with" pairs are kept apart and "With" requests are met where the rules allow. FALSE leaves the groups unchanged.'
   };
   // Settings added after the first school trial. A sheet without these rows uses the default.
-  var NEW_SETTINGS = ['tieSeed'];
+  var NEW_SETTINGS = ['tieSeed', 'useFriendRequests'];
+  var FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
   var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
   var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
@@ -1507,6 +1662,7 @@ var PPAdapter = (function () {
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
     seed('Locked placements', LOCK_HEADERS, []);
+    seed('Friend requests', FRIEND_HEADERS, []);
     seed('PP Run log', RUN_LOG_HEADERS, []);
     addColumns('PP Run log', RUN_LOG_HEADERS);
     return { message: 'Settings and decision tabs are ready. Existing values were preserved.' };
@@ -1655,6 +1811,8 @@ var PPAdapter = (function () {
       Object.keys(g.fits || {}).forEach(function (tier) { rows.push([who + ' placements at fit ' + tier, g.fits[tier]]); });
       rows.push([who + ' average fit', g.meanFit == null ? 'Not available' : Math.round(g.meanFit * 100) / 100]);
     });
+    var f = summary.friends;
+    if (f) rows.push(['Friend requests', f.used ? 'Used' : 'Turned off in Settings'], ['"With" requests met', f.withMet], ['"With" requests not met', f.withUnmet], ['Students with a "With" request who are with a classmate they named', f.studentsMet + ' of ' + f.studentsWith], ['"Not with" requests broken', f.notWithBroken]);
     return rows;
   }
   // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
@@ -1683,6 +1841,7 @@ var PPAdapter = (function () {
   function output(input, result) {
     writeGradeTabs(input.students, result);
     writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.');
+    writeFriendCheck(result.friends);
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
   function snapshot(input, result, config, decisions) {
@@ -1702,7 +1861,7 @@ var PPAdapter = (function () {
     setup();
     var moves = saveMoves(), last = savedRun();
     var input = prepare(), config = settings(), decisions = choices(input.projects, input.students);
-    var context = { previous: last ? Object.keys(last.assignments).map(function (id) { return last.assignments[id]; }) : [], locks: readLocks() };
+    var context = { previous: last ? Object.keys(last.assignments).map(function (id) { return last.assignments[id]; }) : [], locks: readLocks(), friends: readFriends(config) };
     var result = PPEngine.sort(input.students, input.projects, config, decisions, context);
     snapshot(input, result, config, decisions);
     output(input, result);
@@ -1731,6 +1890,26 @@ var PPAdapter = (function () {
       else if (type === 'project') run.projects.push(value);
     });
     return Object.keys(run.assignments).length ? run : null;
+  }
+  // The reviewed Friend requests tab, read by header name. The Comment column is never read, and a
+  // person's Use checkbox decides which rows count.
+  function readFriends(config) {
+    var data = values('Friend requests', false), at = {};
+    if (data.length < 2) return [];
+    var header = data[0].map(text);
+    ['Name', 'Request', 'Classmate', 'Named each other', 'Use', 'Email', 'Classmate email'].forEach(function (h) { at[h] = header.indexOf(h); });
+    if (at.Request < 0 || at.Use < 0 || at.Email < 0 || at['Classmate email'] < 0) {
+      if (config && config.useFriendRequests) throw new Error('Friend requests needs Request, Use, Email and Classmate email columns.');
+      return [];
+    }
+    function cell(r, h) { return at[h] >= 0 ? r[at[h]] : ''; }
+    function yes(v) { return v === true || /^(true|yes)$/i.test(text(v)); }
+    return data.slice(1).map(function (r, i) {
+      return { row: i + 2, name: text(cell(r, 'Name')), classmate: text(cell(r, 'Classmate')), request: text(cell(r, 'Request')), use: yes(cell(r, 'Use')), namedEachOther: yes(cell(r, 'Named each other')), email: text(cell(r, 'Email')), classmateEmail: text(cell(r, 'Classmate email')) };
+    });
+  }
+  function writeFriendCheck(rows) {
+    write('PP Friend check', ['Name', 'Classmate', 'Request', 'Result', 'Why'], (rows || []).map(function (r) { return [r.name, r.classmate, r.request, r.result, r.why]; }));
   }
   function readLocks() {
     return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false).map(function (r) {
@@ -1882,13 +2061,17 @@ var PPAdapter = (function () {
     // Recheck current master cells, but retain source and project-selection
     // findings from the saved run. Reading the previous PP Check would both
     // retain obsolete assignment failures and accumulate repeated warnings.
-    checks = checks.concat(PPEngine.check(state.students, state.projects, current, state.settings, state.choices), state.inputIssues, state.runIssues, lockDifferences(state, current));
+    var friendRows = readFriends(state.settings);
+    checks = checks.concat(PPEngine.check(state.students, state.projects, current, state.settings, state.choices, { friends: friendRows }), state.inputIssues, state.runIssues, lockDifferences(state, current));
     try {
       var live = readInputs(), currentSettings = settings(), currentChoices = choices(live.projects, live.students);
       if (PPEngine.fingerprint({ students: live.students, projects: live.projects, settings: currentSettings, choices: currentChoices }) !== state.inputFingerprint) checks.push({ severity: 'warning', code: 'stale_inputs', message: 'Inputs or settings changed after Sort. These checks use the saved run rules. Run Sort again to apply the current inputs.' });
     } catch (e) { checks.push({ severity: 'warning', code: 'current_input_error', message: 'The saved run was checked, but current inputs could not be compared: ' + e.message }); }
     // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
-    writeResults(state.students, { assignments: current, projects: state.projects, summary: PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current) : {}, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+    var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
+    if (report) summary.friends = report.summary;
+    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+    if (report) writeFriendCheck(report.rows);
     writeIssues('PP Check', checks);
     checks.savedMoves = moves;
     return checks;

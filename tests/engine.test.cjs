@@ -312,3 +312,73 @@ test('lock rows find students by email, Student ID or name, and report names the
   assert.ok(info.issues.every(i=>i.severity==='error'));
   assert.match(info.issues[3].message,/Locked placements row 8 \(Kim, Sam\): "Pottery" isn't a project name/);
 });
+
+const ask=(from,to,request='With',row=2,extra={})=>({row,name:'Practice '+from,classmate:'Practice '+to,request,use:true,namedEachOther:false,email:from+'@example.org',classmateEmail:to+'@example.org',...extra});
+// ann fits a best and bea fits b best; two juniors want each project. Each Major holds up to four.
+const pairRun=(farApart=false)=>{
+  const b=farApart?p('b','Major',{types:['feet'],goals:['9']}):p('b','Major',{goals:['9']});
+  const students=[s('ann',{grade:12,choices:['a','b']}),s('bea',{grade:12,choices:['a','b'],...(farApart?{types:['feet'],goals:['9']}:{goals:['9']})}),
+    s('f1',{choices:['a','z']}),s('f2',{choices:['a','z']}),s('f3',{choices:['b','z'],types:['feet'],goals:['9']}),s('f4',{choices:['b','z'],types:['feet'],goals:['9']})];
+  return {students,projects:[p('a'),b],cfg:config({maxSize:4,targetSize:3,useFriendRequests:true})};
+};
+test('a pair who named each other but were split by the main sort is joined, and the move is explained',()=>{
+  const {students,projects,cfg}=pairRun(),friends=[ask('ann','bea'),ask('bea','ann','With',3)];
+  const before=E.sort(students,projects,cfg,{}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);
+  assert.notEqual(at(before,'ann').project1,at(before,'bea').project1);
+  const r=E.sort(students,projects,cfg,{},{friends});
+  assert.equal(at(r,'ann').project1,at(r,'bea').project1);
+  const mover=['ann','bea'].find(id=>at(r,id).project1!==at(before,id).project1);
+  assert.match(at(r,mover).reason,/Moved to be with Practice (ann|bea), who they asked to work with\.$/);
+  assert.deepEqual(r.friends.map(x=>[x.result,x.why]),[['Together','Moved to be together'],['Together','Moved to be together']]);
+  assert.equal(r.summary.friends.withMet,2); assert.equal(r.summary.friends.studentsMet,2);
+  assert.equal(errors(r).length,0);
+});
+test('a join that would cost two steps in fit is refused and reported',()=>{
+  const {students,projects,cfg}=pairRun(true),friends=[ask('ann','bea'),ask('bea','ann','With',3)];
+  const r=E.sort(students,projects,cfg,{},{friends}),at=id=>r.assignments.find(a=>a.studentId===id);
+  assert.notEqual(at('ann').project1,at('bea').project1);
+  assert.deepEqual(r.friends.map(x=>[x.result,x.why]),[['Not together','Would drop more than one step in fit'],['Not together','Would drop more than one step in fit']]);
+  assert.deepEqual(r.assignments,E.sort(students,projects,cfg,{}).assignments);
+});
+test('a "Not with" pair who both checked only one project is never together, and the one moved is flagged',()=>{
+  const students=[s('x',{grade:12,choices:['a']}),s('y',{grade:10,choices:['a']}),s('f1',{choices:['b','z'],goals:['9']}),s('f2',{choices:['b','z'],goals:['9']})];
+  const projects=[p('a'),p('b','Major',{goals:['9']})],cfg=config({maxSize:4,targetSize:2,useFriendRequests:true});
+  const plain=E.sort(students,projects,cfg,{}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);
+  assert.equal(at(plain,'x').project1,at(plain,'y').project1);
+  const r=E.sort(students,projects,cfg,{},{friends:[ask('x','y','Not with')]});
+  assert.notEqual(at(r,'x').project1,at(r,'y').project1);
+  const moved=['x','y'].filter(id=>at(r,id).flags.some(f=>/^Moved to another group because of a "Not with" friend request\. Fit dropped \d steps?\./.test(f)));
+  assert.equal(moved.length,1);
+  assert.deepEqual(r.friends.map(x=>[x.result,x.why]),[['Not together','Moved apart']]);
+  assert.ok(!r.checks.some(c=>c.code==='NOT_WITH_TOGETHER'));
+});
+test('a Major student and a Minor student who asked to work together are reported, and nobody changes track',()=>{
+  const projects=[p('a'),p('m1','Minor'),p('m2','Minor')],cfg=config({projectCount:3,minorProjects:2,minorMin:1,minorTarget:1,minorMax:1,useFriendRequests:true});
+  const students=[s('maj',{grade:12}),s('min',{grade:12,preference:'Minor',choices:['m1','m2']}),s('f1')];
+  const r=E.sort(students,projects,cfg,{},{friends:[ask('maj','min'),ask('min','maj','With',3)]});
+  assert.equal(r.assignments.find(a=>a.studentId==='maj').project2,null);
+  assert.ok(r.assignments.find(a=>a.studentId==='min').project2);
+  assert.deepEqual(r.friends.map(x=>x.why),['One asked for a Major and the other for Minors','One asked for a Major and the other for Minors']);
+});
+test('with useFriendRequests FALSE the groups match a run without friend requests, and every request says Not applied',()=>{
+  const {students,projects,cfg}=pairRun(),friends=[ask('ann','bea'),ask('bea','ann','With',3),ask('f1','f3','Not with',4)];
+  const off={...cfg,useFriendRequests:false},r=E.sort(students,projects,off,{},{friends});
+  assert.deepEqual(r.assignments,E.sort(students,projects,off,{}).assignments);
+  assert.ok(r.friends.length===3&&r.friends.every(x=>x.result==='Not applied'&&x.why==='Friend requests are turned off in Settings'));
+});
+test('friend requests skip shared emails with a warning, and never move a locked student',()=>{
+  const {students,projects,cfg}=pairRun(),twins=[...students,s('twin1',{email:'shared@example.org'}),s('twin2',{email:'shared@example.org'})];
+  const shared=E.sort(twins,projects,{...cfg,maxSize:5},{},{friends:[ask('ann','x',undefined,2,{classmateEmail:'SHARED@example.org '})]});
+  assert.ok(shared.issues.some(i=>i.code==='FRIEND_SHARED_EMAIL'&&i.severity==='warning'&&i.message==='Two students share this email, so this friend request was skipped.'));
+  assert.deepEqual(shared.friends.map(x=>[x.result,x.why]),[['Not applied','Two students share this email']]);
+  // Locks keep both students where they are; the request is reported instead.
+  const locks=[{email:'ann@example.org',name:'',project1:'a',project2:'',row:2},{email:'bea@example.org',name:'',project1:'b',project2:'',row:3}];
+  const r=E.sort(students,projects,cfg,{},{locks,friends:[ask('ann','bea'),ask('bea','ann','With',3)]});
+  assert.equal(r.assignments.find(a=>a.studentId==='ann').project1,'a');
+  assert.deepEqual(r.friends.map(x=>x.why),['Locked in place by hand','Locked in place by hand']);
+  // A "Not with" pair locked into one group stays there, with errors naming the students.
+  const both=[{email:'ann@example.org',name:'',project1:'a',project2:'',row:2},{email:'bea@example.org',name:'',project1:'a',project2:'',row:3}];
+  const stuck=E.sort(students,projects,cfg,{},{locks:both,friends:[ask('ann','bea','Not with')]});
+  assert.ok(stuck.checks.some(c=>c.code==='NOT_WITH_TOGETHER'&&c.message==='Practice ann and Practice bea are in the same group, but one asked not to work with the other.'));
+  assert.equal(stuck.issues.filter(i=>i.code==='LOCK_BREAKS_RULE'&&/"Not with" request/.test(i.message)).length,2);
+});

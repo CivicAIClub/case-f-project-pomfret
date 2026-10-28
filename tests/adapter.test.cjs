@@ -514,3 +514,54 @@ test('Setup keeps hand-typed rows in Locked placements; Sort uses them and repor
   assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'LOCK_UNKNOWN_PROJECT' && /Underwater Basket Weaving/.test(r[2])));
   assert.deepEqual(lockRows(f), typed);
 });
+
+const FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
+test('Setup creates Friend requests and the useFriendRequests setting, keeping what is already there', () => {
+  const f = fixture(true); f.adapter.practice();
+  assert.deepEqual(f.sheets.get('Friend requests').data, [FRIEND_HEADERS]);
+  assert.deepEqual(f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests').slice(0, 2), ['useFriendRequests', false]);
+  // A reviewed tab already in the sheet keeps its columns and rows.
+  const reviewed = [FRIEND_HEADERS, ['Practice Student 001', 12, 'With', 'Practice Student 002', 12, true, 'Yes', '', true, 'Invented comment', 'practice1@example.org', 'practice2@example.org']];
+  f.sheets.set('Friend requests', new Sheet('Friend requests', reviewed.map(r => r.slice())));
+  const settings = f.sheets.get('Settings').data; settings.splice(settings.findIndex(r => r[0] === 'useFriendRequests'), 1);
+  assert.equal(f.adapter.readSettings().useFriendRequests, false);
+  f.adapter.setup();
+  assert.deepEqual(f.sheets.get('Friend requests').data, reviewed);
+});
+test('friend requests are read by header name, use only rows marked Use, and fill PP Friend check and PP Summary', () => {
+  const f = fixture(true); f.adapter.practice();
+  // Columns in a different order; the Comment column holds text that must never matter.
+  const order = ['Email', 'Classmate email', 'Use', 'Request', 'Name', 'Classmate', 'Comment', 'Named each other', 'Grade', 'Classmate grade', 'Match', 'Note'];
+  const row = values => order.map(h => values[h] === undefined ? '' : values[h]);
+  f.sheets.set('Friend requests', new Sheet('Friend requests', [order,
+    row({ Email: 'practice1@example.org', 'Classmate email': ' PRACTICE2@example.org', Use: true, Request: 'With', Name: 'Practice Student 001', Classmate: 'Practice Student 002', Comment: '=IMPORTXML("ignored")' }),
+    row({ Email: 'practice3@example.org', 'Classmate email': 'practice4@example.org', Use: false, Request: 'Not with', Name: 'Practice Student 003', Classmate: 'Practice Student 004' }),
+    row({ Email: '', 'Classmate email': 'practice6@example.org', Use: true, Request: 'With', Name: 'Practice Student 005', Classmate: 'Practice Student 006' })]));
+  f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+  f.adapter.sort('Friend requests practice');
+  const check = f.sheets.get('PP Friend check').data;
+  assert.deepEqual(check[0], ['Name', 'Classmate', 'Request', 'Result', 'Why']);
+  assert.deepEqual(check.slice(2).map(r => [r[3], r[4]]), [['Not applied', 'Use is not checked'], ['Not applied', 'Email or classmate email is blank']]);
+  assert.ok(['Together', 'Not together'].includes(check[1][3]) && check[1][4]);
+  const summary = new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  assert.equal(summary.get('Friend requests'), 'Used');
+  assert.equal(summary.get('"With" requests met') + summary.get('"With" requests not met'), 1);
+  // Turned off, the groups match a run without the tab, and every request says so.
+  const plain = practiceRun('Without friend requests'), off = fixture(true); off.adapter.practice();
+  off.sheets.set('Friend requests', new Sheet('Friend requests', f.sheets.get('Friend requests').data.map(r => r.slice())));
+  off.adapter.sort('Friend requests off');
+  for (const tab of GRADE_TABS) assert.deepEqual(off.sheets.get(tab).data, plain.f.sheets.get(tab).data);
+  assert.ok(off.sheets.get('PP Friend check').data.slice(1).every(r => r[3] === 'Not applied' && r[4] === 'Friend requests are turned off in Settings'));
+});
+test('Check again reports a "Not with" pair put together by hand and rebuilds PP Friend check', () => {
+  const { f, run } = practiceRun('Not with practice', f => {
+    f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+    f.sheets.get('Friend requests').data.push(['Practice Student 001', 12, 'Not with', 'Practice Student 002', 12, false, '', '', true, '', 'practice1@example.org', 'practice2@example.org']);
+  });
+  const one = placedRows(f, run).find(x => x.row[0] === 'practice1@example.org'), two = placedRows(f, run).find(x => x.row[0] === 'practice2@example.org');
+  assert.ok(!f.sheets.get('PP Check').data.some(r => r[1] === 'NOT_WITH_TOGETHER'));
+  two.row[2] = one.row[2]; two.row[3] = one.row[3];
+  const checks = f.adapter.checkAgain();
+  assert.ok(checks.some(c => c.code === 'NOT_WITH_TOGETHER' && c.severity === 'error'));
+  assert.deepEqual(f.sheets.get('PP Friend check').data[1].slice(3), ['Together', 'In the same group']);
+});

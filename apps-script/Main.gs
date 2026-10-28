@@ -14,10 +14,12 @@ var PPAdapter = (function () {
     minorMin: 'Minimum students taking two Minors.', minorTarget: 'Target students taking two Minors.',
     minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Let Major-preference students take Minors only while Minors are below minorMin; each move is flagged.',
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.',
-    tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.'
+    tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.',
+    useFriendRequests: 'TRUE uses the reviewed Friend requests tab: "Not with" pairs are kept apart and "With" requests are met where the rules allow. FALSE leaves the groups unchanged.'
   };
   // Settings added after the first school trial. A sheet without these rows uses the default.
-  var NEW_SETTINGS = ['tieSeed'];
+  var NEW_SETTINGS = ['tieSeed', 'useFriendRequests'];
+  var FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
   var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
   var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
@@ -130,6 +132,7 @@ var PPAdapter = (function () {
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
     seed('Locked placements', LOCK_HEADERS, []);
+    seed('Friend requests', FRIEND_HEADERS, []);
     seed('PP Run log', RUN_LOG_HEADERS, []);
     addColumns('PP Run log', RUN_LOG_HEADERS);
     return { message: 'Settings and decision tabs are ready. Existing values were preserved.' };
@@ -278,6 +281,8 @@ var PPAdapter = (function () {
       Object.keys(g.fits || {}).forEach(function (tier) { rows.push([who + ' placements at fit ' + tier, g.fits[tier]]); });
       rows.push([who + ' average fit', g.meanFit == null ? 'Not available' : Math.round(g.meanFit * 100) / 100]);
     });
+    var f = summary.friends;
+    if (f) rows.push(['Friend requests', f.used ? 'Used' : 'Turned off in Settings'], ['"With" requests met', f.withMet], ['"With" requests not met', f.withUnmet], ['Students with a "With" request who are with a classmate they named', f.studentsMet + ' of ' + f.studentsWith], ['"Not with" requests broken', f.notWithBroken]);
     return rows;
   }
   // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
@@ -306,6 +311,7 @@ var PPAdapter = (function () {
   function output(input, result) {
     writeGradeTabs(input.students, result);
     writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.');
+    writeFriendCheck(result.friends);
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
   function snapshot(input, result, config, decisions) {
@@ -325,7 +331,7 @@ var PPAdapter = (function () {
     setup();
     var moves = saveMoves(), last = savedRun();
     var input = prepare(), config = settings(), decisions = choices(input.projects, input.students);
-    var context = { previous: last ? Object.keys(last.assignments).map(function (id) { return last.assignments[id]; }) : [], locks: readLocks() };
+    var context = { previous: last ? Object.keys(last.assignments).map(function (id) { return last.assignments[id]; }) : [], locks: readLocks(), friends: readFriends(config) };
     var result = PPEngine.sort(input.students, input.projects, config, decisions, context);
     snapshot(input, result, config, decisions);
     output(input, result);
@@ -354,6 +360,26 @@ var PPAdapter = (function () {
       else if (type === 'project') run.projects.push(value);
     });
     return Object.keys(run.assignments).length ? run : null;
+  }
+  // The reviewed Friend requests tab, read by header name. The Comment column is never read, and a
+  // person's Use checkbox decides which rows count.
+  function readFriends(config) {
+    var data = values('Friend requests', false), at = {};
+    if (data.length < 2) return [];
+    var header = data[0].map(text);
+    ['Name', 'Request', 'Classmate', 'Named each other', 'Use', 'Email', 'Classmate email'].forEach(function (h) { at[h] = header.indexOf(h); });
+    if (at.Request < 0 || at.Use < 0 || at.Email < 0 || at['Classmate email'] < 0) {
+      if (config && config.useFriendRequests) throw new Error('Friend requests needs Request, Use, Email and Classmate email columns.');
+      return [];
+    }
+    function cell(r, h) { return at[h] >= 0 ? r[at[h]] : ''; }
+    function yes(v) { return v === true || /^(true|yes)$/i.test(text(v)); }
+    return data.slice(1).map(function (r, i) {
+      return { row: i + 2, name: text(cell(r, 'Name')), classmate: text(cell(r, 'Classmate')), request: text(cell(r, 'Request')), use: yes(cell(r, 'Use')), namedEachOther: yes(cell(r, 'Named each other')), email: text(cell(r, 'Email')), classmateEmail: text(cell(r, 'Classmate email')) };
+    });
+  }
+  function writeFriendCheck(rows) {
+    write('PP Friend check', ['Name', 'Classmate', 'Request', 'Result', 'Why'], (rows || []).map(function (r) { return [r.name, r.classmate, r.request, r.result, r.why]; }));
   }
   function readLocks() {
     return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false).map(function (r) {
@@ -505,13 +531,17 @@ var PPAdapter = (function () {
     // Recheck current master cells, but retain source and project-selection
     // findings from the saved run. Reading the previous PP Check would both
     // retain obsolete assignment failures and accumulate repeated warnings.
-    checks = checks.concat(PPEngine.check(state.students, state.projects, current, state.settings, state.choices), state.inputIssues, state.runIssues, lockDifferences(state, current));
+    var friendRows = readFriends(state.settings);
+    checks = checks.concat(PPEngine.check(state.students, state.projects, current, state.settings, state.choices, { friends: friendRows }), state.inputIssues, state.runIssues, lockDifferences(state, current));
     try {
       var live = readInputs(), currentSettings = settings(), currentChoices = choices(live.projects, live.students);
       if (PPEngine.fingerprint({ students: live.students, projects: live.projects, settings: currentSettings, choices: currentChoices }) !== state.inputFingerprint) checks.push({ severity: 'warning', code: 'stale_inputs', message: 'Inputs or settings changed after Sort. These checks use the saved run rules. Run Sort again to apply the current inputs.' });
     } catch (e) { checks.push({ severity: 'warning', code: 'current_input_error', message: 'The saved run was checked, but current inputs could not be compared: ' + e.message }); }
     // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
-    writeResults(state.students, { assignments: current, projects: state.projects, summary: PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current) : {}, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+    var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
+    if (report) summary.friends = report.summary;
+    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+    if (report) writeFriendCheck(report.rows);
     writeIssues('PP Check', checks);
     checks.savedMoves = moves;
     return checks;
