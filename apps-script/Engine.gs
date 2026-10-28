@@ -1,6 +1,7 @@
 // Generated from core/engine.js. Edit the core source and rebuild.
 /* Deterministic, local-only placement prototype. The cohort is selected before
- * optimization. Within each Major/Minor cohort, total fit is optimized in
+ * optimization: Minor-preference students, then the Not-sure students who checked
+ * the most running Minors. Within each Major/Minor cohort, total fit is optimized in
  * lexicographic senior/junior/sophomore/green order. This does not guarantee
  * ordered grade means or a globally best cohort/project plan. Balanced quotas
  * are relaxed within the cap when needed; incomplete results are not proofs
@@ -80,13 +81,18 @@ var PPEngine = (function () {
   function priority(a,b){return Number(a.status==='late')-Number(b.status==='late')||b.grade-a.grade||compare(a.id,b.id);}
   function weight(s,base){return s.status==='late'?1:Math.pow(base,s.grade===12?3:s.grade===11?2:1);}
   function cohort(students,projects,cfg,issues){
-    var active=students.filter(eligible),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length;
+    var active=students.filter(eligible),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
+    minors.forEach(function(p){running[p.id]=true;});
     var lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,active.length-majors*cfg.maxSize),upper=Math.min(cfg.minorMax,minors.length*cfg.maxSize,active.length-majors*cfg.minSize);
     if(lower>upper)issues.push(note('COHORT_CAPACITY','warning','The group sizes cannot fit the requested number of Minor students. Check the project list and Minor student targets.'));
-    var desired=Math.max(0,Math.min(minors.length*cfg.maxSize,lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget));
-    var minor=active.filter(function(s){return s.preference==='Minor';}).sort(priority),unknown=active.filter(function(s){return s.preference==='Not sure';}).sort(priority);
+    var desired=Math.max(0,Math.min(minors.length*cfg.maxSize,lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget)),minimum=Math.min(desired,lower);
+    function minorChecks(s){return arr(s.choices).filter(function(id,i,all){return running[id]&&all.indexOf(id)===i;}).length;}
+    // Every Minor-preference student does Minors. Not-sure students who checked the most running
+    // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
+    var minor=active.filter(function(s){return s.preference==='Minor';}).sort(priority),unknown=active.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(a.status==='late')-Number(b.status==='late')||compare(a.id,b.id);});
     while(minor.length<desired&&unknown.length)minor.push(unknown.shift());
-    if(cfg.allowMajorToMinor){var major=active.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(a.status==='late')-Number(b.status==='late')||a.grade-b.grade||compare(a.id,b.id);});while(minor.length<desired&&major.length)minor.push(major.shift());}
+    // Major-preference students move only while the Minor count is below its minimum.
+    if(cfg.allowMajorToMinor){var major=active.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(a.status==='late')-Number(b.status==='late')||a.grade-b.grade||compare(a.id,b.id);});while(minor.length<minimum&&major.length)minor.push(major.shift());}
     var members={};minor.forEach(function(s){members[s.id]=true;});
     return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority)};
   }
@@ -133,11 +139,11 @@ var PPEngine = (function () {
     });return oriented;
   }
   // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
-  // when Mr. Litowitz moves a student by hand (byHand drops the note about the Minor student target).
+  // when Mr. Litowitz moves a student by hand (byHand drops the note about the Minor student minimum).
   function explain(s,ids,projects,input,choices,byHand){
     var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
     var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
-    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to meet the Minor student target.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
+    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to reach the Minor student minimum.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
     return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
   }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}

@@ -12,7 +12,7 @@ var PPAdapter = (function () {
     targetSize: 'Preferred group size.', maxSize: 'Absolute group size limit.',
     projectCount: 'Target number of distinct running projects.', minorProjects: 'Target distinct Minor projects, each running twice.',
     minorMin: 'Minimum students taking two Minors.', minorTarget: 'Target students taking two Minors.',
-    minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Allow Major-preference moves when needed; each move is flagged.',
+    minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Let Major-preference students take Minors only while Minors are below minorMin; each move is flagged.',
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.'
   };
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
