@@ -27,18 +27,19 @@ The client's expectation was the end of the first week of November (206–214). 
 
 ## Differences from the October 26 specification
 
-These remain open. This PR packages the current implementation, not a claim that the expanded specification is complete.
+Updated October 28, 2026 for rounds 1 and 2. These rows describe the current implementation, not a claim that the expanded specification is complete.
 
 | Area | Current prototype | Remaining work |
 | --- | --- | --- |
-| Identity/nonresponse | Missing or ambiguous identities are held for review and accounted for. | Reconcile placeholder/name matching and last-pass placement of no-response students, including shared-email cases. |
-| Project suggestions | Checked-interest/alignment score and explicit project count. | Reconcile good-fit ranking, Minor demand and cohort-derived Major count. |
-| Sorting and seniority | Deterministic capacity-constrained matching, grade priority inside selected cohorts. | Reconcile track selection, crowding, tie-breaks and improvement passes. Overall grade-average fit ordering is not guaranteed. |
-| Small projects/overrides | Run=Yes can preserve an undersized project with findings. Fixed Minor bounds. | Separate Run=Yes from Must run for cutting, consider Minor week swaps and scale bounds. |
-| Approved Minor leaders | General rule requires different projects across weeks. | Add the same-Minor-both-weeks leader exception and checks. |
-| Gender | Audits supplied values; missing data is unchecked. | Automatic repair is absent. Validate move rules with approved input. |
-| Change history | Reason, counts and fingerprint in log; configuration saved in snapshot. | Add operator identity and readable settings/choices to the append-only log. |
-| Check again | Checks edited masters against saved run; retains findings and flags source changes. | Read fresh sources and rebuild summary, review list and project rosters without changing masters. |
+| Identity/nonresponse | Two students who sent forms from one email are both kept, with IDs that add the name and a warning. A hand-typed row (name, no email or timestamp) merges into the matching form in its grade; trip and freshman-leader rows merge only on a full-name match. An unmatched row is a no-response student placed last. Ambiguous matches and the same name in two grades go to review. | Confirm the name rule on the real hand-typed rows. Hand-typed rows that do have an email still go to review. |
+| Project suggestions | Projects run by checked-interest and alignment score. The Minor slots take Minor-only projects first, then the Either projects with the most Minor interest; the rest of the Either projects run as Majors. | Reconcile good-fit ranking and a cohort-derived Major count. |
+| Sorting and seniority | Deterministic capacity-constrained matching with grade priority inside each track. Students who checked one project or none go last, like green students. Ties follow a fixed shuffle set by `tieSeed`. Reruns keep last run's placements as the smallest tie-break. | Overall grade-average fit ordering is not guaranteed; on the invented practice data, juniors average slightly better than seniors. |
+| Small projects/overrides | Run=Yes or Must run keeps a project. A project with a locked student is never cut. Max size in Project choices lets a popular project take a bigger group while every other group still reaches the minimum. | Separate Run=Yes from Must run for cutting, and scale the Minor bounds. |
+| Leaders | Leaders listed in Project choices are placed in the project they lead before anyone else: both weeks for a Major, one week for a Minor. Errors name any leader who can't be placed. | Add the same-Minor-both-weeks leader exception if the client wants it. Leaders still need the school's approved list. |
+| Gender | Reads Male and Female from the Gender tab and never guesses. Every group is checked using known genders, and `balanceGender` fixes breaks with swaps that cost at most one step of fit. | Validate with the school's export. |
+| Friend requests | Comments are never read. With `useFriendRequests` on, the reviewed Friend requests tab keeps "Not with" pairs apart and meets "With" requests where a student drops at most one step of fit. PP Friend check explains each request. | Validate with the reviewed tab and Mr. Litowitz. |
+| Change history | The log has reason, counts, fingerprint, tie seed and Run by. Moves are saved in Locked placements with Locked by and When. Configuration is saved in the snapshot. | Readable settings and choices in the append-only log. |
+| Check again | Saves moves as locks first, recomputes moved rows, reports any rule a move breaks, and rebuilds the group tabs, PP Summary, PP Needs you, PP Seniors to check and PP Friend check from the grade tabs. | Read fresh sources without a new sort. |
 | Catalog/mappings | Known corrections and aliases live in code. | Move specified form/historical-name mappings into editable control tabs. |
 | Output ownership | Normal runs preserve sources and existing control settings. | Review all output-name collision and write-boundary cases against the expanded specification before school use. |
 | School validation | Local tests execute the bundle in a spreadsheet simulator. | Actual school-account scratch-Sheets trial, independent review and client acceptance. |

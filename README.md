@@ -42,7 +42,7 @@ A five-step introduction appears on each fresh page load and can be reopened fro
 4. Review students, project rosters and grouped warnings.
 5. Export the proposal for review.
 
-The app has two main screens: choose projects, then place students. Changes to rules or project decisions mark old results as out of date. Reloading resets the demo. Comments are available for a person to read; friendship requests do not influence the sorter.
+The app has two main screens: choose projects, then place students. Changes to rules or project decisions mark old results as out of date. Reloading resets the demo. Comments are available for a person to read and never affect placements. The browser demo has no friend requests; the Google Sheets version uses the reviewed Friend requests tab only when `useFriendRequests` is TRUE.
 
 `preview/demo-data.js` generates 253 invented browser records: 240 eligible or late students, 11 excluded records and two identity-review examples. The Sheets practice generator creates 240 students. These are separate fixtures for different review cases.
 
@@ -58,9 +58,20 @@ Use an **empty scratch spreadsheet** with practice data first. This trial has no
 
 In the grade tabs, a Major shows the same MAJ- label in Project #1 and Project #2, like last year's master list. A Minor shows two different MIN- labels, week 1 then week 2.
 
-To move a student by hand, pick another label from the dropdown in Project #1 or Project #2. A Major is the same MAJ- label twice, or one label and a blank. A Minor is two different MIN- labels. Then run **Check again**. For each student whose projects changed since Sort, it recomputes Status, Fit #1, Fit #2, Reason and Review flags, starts the reason with "Moved by hand." and writes those cells back. Students who weren't moved keep their cells. PP Check reports any rule a move breaks: group sizes, last year's project, gender balance when gender data exists, and a Major mixed with a Minor. Moving a student between one Major and two Minors is allowed and listed as information. Check again also flags changed source inputs. It does not rebuild PP Group tabs, PP Summary or PP Needs you. Sort rebuilds those, but Sort also rewrites the grade tabs, so it replaces any moves made by hand.
+To move a student by hand, pick another label from the dropdown in Project #1 or Project #2. A Major is the same MAJ- label twice, or one label and a blank. A Minor is two different MIN- labels. Then run **Check again**. It first saves every move as a row in `Locked placements` and says "Saved N moves. They'll stay put when you sort again." For each moved student it recomputes Status, Fit #1, Fit #2, Reason and Review flags, starts the reason with "Moved by hand." and writes those cells back. Students who weren't moved keep their cells. PP Check reports any rule a move breaks: group sizes, last year's project, gender balance when gender data exists, a "Not with" pair together, and a Major mixed with a Minor. Moving a student between one Major and two Minors is allowed and listed as information. Check again then rebuilds the PP Group tabs, PP Summary, PP Needs you, PP Seniors to check and PP Friend check from the grade tabs, without sorting again, and flags changed source inputs. Sort also saves moves first, so a move is kept even without Check again. Delete a student's row in Locked placements to unlock them; rows can also be typed in by hand, naming a project by name, ID or MAJ-/MIN- label.
 
-Sources are `Senior`, `Junior`, `Sophomore` and `Projects`. Normal preparation and sorting read them without changing them. Controls are `Settings`, `Project choices`, `Status changes` and `Gender`. Generated review and roster tabs start with `PP `. Student comments appear only in `PP Students`, because the grade and group tabs get shared and comments can name other students.
+Sources are `Senior`, `Junior`, `Sophomore` and `Projects`. Normal preparation and sorting read them without changing them. Controls are `Settings`, `Project choices`, `Status changes`, `Gender`, `Locked placements` and `Friend requests`. Setup creates any of these that are missing, adds missing Settings rows and columns, and never changes a value that's already there. Generated review and roster tabs start with `PP `.
+
+**Sort** places students in this order:
+
+- Locked students go exactly where their Locked placements row says, even on the other track. A lock that breaks a rule stays, with an error in PP Check naming the student.
+- Leaders listed in Project choices go in the project they lead: both weeks for a Major, one week for a Minor.
+- Everyone else is placed by fit, seniors first. Green students and students who checked one project or none go after everyone else. Students who tie go in a fixed shuffle set by the `tieSeed` setting, which PP Run log records with Run by. A rerun keeps last run's placements whenever nothing better is possible, so a rerun with nothing changed gives the same groups.
+- A project with a number in Project choices' Max size column may take up to that many students per group (never more than 14) when more students want it; every other group still reaches the minimum.
+- With `useFriendRequests` TRUE, only rows in Friend requests with Use checked count. "Not with" pairs are never in the same group, and each student with a "With" request gets a classmate they named when that costs them at most one step in fit and breaks no other rule. PP Friend check gives each request's result and the reason. The Comment column is never read.
+- With `balanceGender` TRUE, students are swapped between groups so each group has no Male students or at least three, and the same for Female, at no more than one step of fit each. PP Check reports every group that breaks this rule whether or not it's on.
+
+PP Summary shows each grade's placements, fits and checked projects, the friend request counts and each group's size. PP Seniors to check lists every placed senior with a project they didn't check. Student comments appear only in `PP Students`, because the grade and group tabs get shared and comments can name other students.
 
 **Prepare students** handles a few cases from the real forms, and `PP Input check` lists each one:
 
