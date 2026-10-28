@@ -302,15 +302,23 @@ var PPAdapter = (function () {
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
   }
+  // A project tab's name: a slash in the project name becomes " - ", other characters Sheets
+  // refuses become spaces, and there is never more than one space in a row.
+  function groupTabName(index, name) {
+    return ('PP Group ' + String(index + 1).padStart(2, '0') + ' ' + text(name).replace(/\s*\/\s*/g, ' - ').replace(/[\[\]*?\\:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 65)).trim();
+  }
+  // The name round 2 gave the same tab, so a rerun removes it.
+  function oldGroupTabName(index, name) { return 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65); }
   // A roster for each project like last year's: the label, faculty and location, then its students,
   // seniors first and then by last name. A Minor has a block for each week. Nothing reads these
-  // tabs back.
+  // tabs back. A PP Group tab from an earlier run that this run doesn't write, for a project that
+  // stopped running or under an older name, is deleted.
   function writeGroupTabs(students, result, info) {
     var studentsById = {}, oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); }), newRegistry = [];
     students.forEach(function (s) { studentsById[s.id] = s; });
     function total(n) { return n + (n === 1 ? ' Student' : ' Students'); }
     result.projects.forEach(function (p, index) {
-      var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), minor = p.finalLength === 'Minor', where = info[p.id] || { faculty: '', location: '' };
+      var name = groupTabName(index, p.name), minor = p.finalLength === 'Minor', where = info[p.id] || { faculty: '', location: '' };
       var lines = [{ cells: [projectToken(p.id, result.projects)], style: 'title' }, { cells: [('Faculty: ' + where.faculty).trim()] }, { cells: [('Location: ' + where.location).trim()] }];
       (minor ? [0, 1] : [0]).forEach(function (w) {
         var group = result.assignments.filter(function (a) { return a.status === 'placed' && studentsById[a.studentId] && (w ? a.project2 : a.project1) === p.id; });
@@ -323,10 +331,9 @@ var PPAdapter = (function () {
       writeLayout(name, 4, lines);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
-    oldRegistry.forEach(function (name) {
-      if (/^PP Group \d{2} /.test(name) && !newRegistry.some(function (r) { return r[2] === name; }) && sheet(name)) {
-        writeLayout(name, 1, [{ cells: ['Retired by the latest run. Use PP Project tabs for current groups.'] }]);
-      }
+    oldRegistry.concat(result.projects.map(function (p, index) { return oldGroupTabName(index, p.name); })).forEach(function (name) {
+      var stale = sheet(name);
+      if (/^PP Group \d{2} /.test(name) && !newRegistry.some(function (r) { return r[2] === name; }) && stale) ss().deleteSheet(stale);
     });
     write('PP Project tabs', ['Project ID', 'Project', 'Sheet', 'Length'], newRegistry);
   }
@@ -701,7 +708,7 @@ var PPAdapter = (function () {
     setup();
     return { message: 'Created 240 invented students. No real student records were used.' };
   }
-  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, readDetails: details, needsDecision: needsDecision, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
+  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, readDetails: details, needsDecision: needsDecision, groupTabName: groupTabName, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
 }());
 
 function onOpen() {

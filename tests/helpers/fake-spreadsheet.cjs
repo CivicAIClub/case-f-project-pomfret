@@ -49,7 +49,8 @@ function loadBundle() {
       if (sheets.has(name)) throw new Error('Duplicate sheet: ' + name);
       const sheet = new Sheet(name); sheets.set(name, sheet); return sheet;
     },
-    getSheets: () => [...sheets.values()]
+    getSheets: () => [...sheets.values()],
+    deleteSheet: sheet => { sheets.delete(sheet.name); }
   };
   const context = vm.createContext({
     module: {exports:{}}, Date, console,

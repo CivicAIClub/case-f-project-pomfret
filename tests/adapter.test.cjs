@@ -12,7 +12,8 @@ function fixture(useRealCore = false) {
   const spreadsheet = {
     getSheetByName: name => sheets.get(name) || null,
     insertSheet: name => { const s = new Sheet(name); sheets.set(name, s); return s; },
-    getSheets: () => [...sheets.values()]
+    getSheets: () => [...sheets.values()],
+    deleteSheet: sheet => { sheets.delete(sheet.name); }
   };
   const catalog = [
     { id: 'robotics', name: 'Robotics', length: 'Major', types: ['hands'], goals: ['9'], aliases: [], enabled: true },
@@ -903,4 +904,31 @@ test('PP Needs you and Review flags show only flags that need a decision; PP Stu
   const other = placedRows(f, run).find(x => x.a.project2 && ![clean.id, fit6.id, leader.id].includes(x.row[0]));
   moveToMajor(f, run, other); f.adapter.checkAgain();
   check();
+});
+
+test('a project tab name turns a slash into " - " and never has two spaces in a row; a tab with the old name is removed on the next Sort', () => {
+  const f = fixture();
+  assert.equal(f.adapter.groupTabName(0, 'A / B'), 'PP Group 01 A - B');
+  assert.equal(f.adapter.groupTabName(1, 'Biomimicry / 3D Adaptive Tools'), 'PP Group 02 Biomimicry - 3D Adaptive Tools');
+  assert.equal(f.adapter.groupTabName(16, 'The People v. The System: Class Actions and Social Change'), 'PP Group 17 The People v. The System Class Actions and Social Change');
+  assert.equal(f.adapter.groupTabName(2, 'Trail Mix/Rock  Climbing'), 'PP Group 03 Trail Mix - Rock Climbing');
+  // A sheet from round 2: its tab used the old name, and PP Project tabs listed it.
+  f.source(); f.catalog[0].name = 'A / B';
+  f.sheets.set('PP Group 01 A   B', new Sheet('PP Group 01 A   B', [['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason']]));
+  f.sheets.set('PP Project tabs', new Sheet('PP Project tabs', [['Project ID', 'Project', 'Sheet', 'Length'], ['robotics', 'A / B', 'PP Group 01 A   B', 'Major']]));
+  f.adapter.sort('New tab names');
+  const groups = () => [...f.sheets.keys()].filter(n => n.startsWith('PP Group'));
+  assert.deepEqual(groups(), ['PP Group 01 A - B']);
+  assert.equal(f.sheets.get('PP Group 01 A - B').data[0][0], 'MAJ-A / B');
+  assert.deepEqual(f.sheets.get('PP Project tabs').data.slice(1).map(r => r[2]), ['PP Group 01 A - B']);
+  // Even when PP Project tabs no longer lists it, the old name goes.
+  f.sheets.set('PP Group 01 A   B', new Sheet('PP Group 01 A   B'));
+  f.sheets.get('PP Project tabs').data.splice(1);
+  f.adapter.sort('Old tab without a list');
+  assert.deepEqual(groups(), ['PP Group 01 A - B']);
+  // A tab for a project that no longer runs is removed too.
+  f.sheets.set('PP Group 02 Old project', new Sheet('PP Group 02 Old project'));
+  f.sheets.get('PP Project tabs').data.push(['old', 'Old project', 'PP Group 02 Old project', 'Major']);
+  f.adapter.sort('A project stopped running');
+  assert.deepEqual(groups(), ['PP Group 01 A - B']);
 });
