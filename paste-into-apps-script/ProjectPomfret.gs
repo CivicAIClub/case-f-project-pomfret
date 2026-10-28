@@ -1087,8 +1087,13 @@ var PPEngine = (function () {
     function ids(a,b){return keys[a]<keys[b]?-1:keys[a]>keys[b]?1:compare(a,b);}
     return {keys:keys,ids:ids,students:function(a,b){return ids(a.id,b.id);}};
   }
-  function priorityOrder(run){return function(a,b){return Number(a.status==='late')-Number(b.status==='late')||b.grade-a.grade||run.tie.students(a,b);};}
-  function weight(s,base){return s.status==='late'?1:Math.pow(base,s.grade===12?3:s.grade===11?2:1);}
+  function checkedCount(s){return arr(s.choices).filter(function(id,i,all){return all.indexOf(id)===i;}).length;}
+  function leadsRunning(s,projects,choices){return arr(projects).some(function(p){return isLeader(s,p,choices);});}
+  // Green students, and students who checked one project or none, are placed after everyone else.
+  // A student listed as the leader of a running project is placed by the leader rule instead.
+  function placedLast(s,projects,choices){return s.status==='late'||(checkedCount(s)<=1&&!leadsRunning(s,projects,choices));}
+  function priorityOrder(run){return function(a,b){return Number(run.last(a))-Number(run.last(b))||b.grade-a.grade||run.tie.students(a,b);};}
+  function weight(s,base,run){return run.last(s)?1:Math.pow(base,s.grade===12?3:s.grade===11?2:1);}
   function cohort(students,projects,cfg,issues,run){
     var priority=priorityOrder(run);
     var active=students.filter(eligible),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
@@ -1099,10 +1104,10 @@ var PPEngine = (function () {
     function minorChecks(s){return arr(s.choices).filter(function(id,i,all){return running[id]&&all.indexOf(id)===i;}).length;}
     // Every Minor-preference student does Minors. Not-sure students who checked the most running
     // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
-    var minor=active.filter(function(s){return s.preference==='Minor';}).sort(priority),unknown=active.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(a.status==='late')-Number(b.status==='late')||run.tie.students(a,b);});
+    var minor=active.filter(function(s){return s.preference==='Minor';}).sort(priority),unknown=active.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(run.last(a))-Number(run.last(b))||run.tie.students(a,b);});
     while(minor.length<desired&&unknown.length)minor.push(unknown.shift());
     // Major-preference students move only while the Minor count is below its minimum.
-    if(cfg.allowMajorToMinor){var major=active.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(a.status==='late')-Number(b.status==='late')||a.grade-b.grade||run.tie.students(a,b);});while(minor.length<minimum&&major.length)minor.push(major.shift());}
+    if(cfg.allowMajorToMinor){var major=active.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(minor.length<minimum&&major.length)minor.push(major.shift());}
     var members={};minor.forEach(function(s){members[s.id]=true;});
     return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority)};
   }
@@ -1114,10 +1119,10 @@ var PPEngine = (function () {
   }
   // Successive shortest augmenting paths. Potentials make residual reverse edges
   // usable with Dijkstra. All costs are integer and remain below MAX_SAFE_INTEGER.
-  function assignFlow(students,projects,cfg,choices,quota,units,base){
+  function assignFlow(students,projects,cfg,choices,quota,units,base,run){
     var n=students.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[];
     function edge(u,v,cap,cost){var a={to:v,rev:graph[v].length,cap:cap,cost:cost,initial:cap},b={to:u,rev:graph[u].length,cap:0,cost:-cost,initial:0};graph[u].push(a);graph[v].push(b);return a;}
-    students.forEach(function(s,i){var w=weight(s,base);edge(0,1+i,units,-6*w);projects.forEach(function(p,j){if(allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,(f.tier-1)*w);links.push({student:s.id,project:p.id,edge:e});}});});
+    students.forEach(function(s,i){var w=weight(s,base,run);edge(0,1+i,units,-6*w);projects.forEach(function(p,j){if(allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,(f.tier-1)*w);links.push({student:s.id,project:p.id,edge:e});}});});
     projects.forEach(function(p,j){edge(1+n+j,sink,(quota[p.id]||0)*units,0);});
     var potential=Array(V).fill(Infinity);potential[0]=0;
     for(var k=0;k<V;k++){var changed=false;for(var u=0;u<V;u++){if(!isFinite(potential[u]))continue;graph[u].forEach(function(e){if(e.cap>0&&potential[e.to]>potential[u]+e.cost){potential[e.to]=potential[u]+e.cost;changed=true;}});}if(!changed)break;}
@@ -1153,17 +1158,18 @@ var PPEngine = (function () {
   function explain(s,ids,projects,input,choices,byHand){
     var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
     var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
-    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to reach the Minor student minimum.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
+    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&checkedCount(s)<=1&&!leadsRunning(s,projects,choices))flags.push(checkedCount(s)?'Checked only one project, so placed after everyone else.':'Checked no projects, so placed after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to reach the Minor student minimum.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
     return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
   }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
   function allocate(students,projects,cfg,choices,scores,issues,run){
+    run.last=function(s){return placedLast(s,projects,choices);};
     var groups=cohort(students,projects,cfg,issues,run),majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';}),base=6*Math.max(1,students.length*2)+1;
     if(Math.pow(base,3)*6*students.length*2>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
     function solve(group,list,units){
       var quota=quotas(group.length,list,cfg,scores),assigned={},relaxed=false;
       for(var attempt=0;attempt<=cfg.maxSize;attempt++){
-        assigned=assignFlow(group,list,cfg,choices,quota,units,base);
+        assigned=assignFlow(group,list,cfg,choices,quota,units,base,run);
         if(group.every(function(s){return assigned[s.id].length===units;}))break;
         var expandable=list.filter(function(p){return quota[p.id]<cfg.maxSize;});if(!expandable.length)break;
         expandable.forEach(function(p){quota[p.id]++;});relaxed=true;

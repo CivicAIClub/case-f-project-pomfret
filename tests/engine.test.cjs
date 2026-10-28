@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const E = require('../core/engine.js');
 const p = (id,length='Major',extra={}) => ({id,name:id,length,types:['hands'],goals:['3'],aliases:[],enabled:true,...extra});
-const s = (id,extra={}) => ({id,name:'Practice '+id,email:id+'@example.org',grade:11,preference:'Major',choices:['a'],types:['hands'],goals:['3'],previous:[],status:'eligible',gender:null,comments:'',source:{sheet:'Practice',row:1},issues:[],...extra});
+// Two choices by default, so a student isn't placed last for checking only one project.
+const s = (id,extra={}) => ({id,name:'Practice '+id,email:id+'@example.org',grade:11,preference:'Major',choices:['a','z'],types:['hands'],goals:['3'],previous:[],status:'eligible',gender:null,comments:'',source:{sheet:'Practice',row:1},issues:[],...extra});
 const config = (extra={}) => ({...E.defaults,minSize:1,targetSize:2,maxSize:3,projectCount:2,minorProjects:0,minorMin:0,minorTarget:0,minorMax:0,...extra});
 const errors = result => result.checks.filter(c=>c.severity==='error');
 
@@ -180,4 +181,20 @@ test('students who tie are ordered by a fixed shuffle of their ID and tieSeed, n
   // The same seed always gives the same groups.
   const students=pair('Casey Practice','Drew Practice');
   assert.deepEqual(E.sort(students,projects,cfg,{}),E.sort(students,projects,cfg,{}));
+});
+
+test('a student who checked one project or none is placed after everyone else, unless they lead a running project',()=>{
+  // a has one seat; b suits nobody.
+  const projects=[p('a'),p('b','Major',{types:['feet'],goals:['1']})],cfg=config({maxSize:1,targetSize:1});
+  const senior=s('senior',{grade:12,choices:['a']}),soph=s('soph',{grade:10,choices:['a','c','d','e','f']});
+  let r=E.sort([senior,soph],projects,cfg,{});const at=id=>r.assignments.find(a=>a.studentId===id);
+  assert.equal(at('soph').project1,'a'); assert.equal(at('senior').project1,'b');
+  assert.ok(at('senior').flags.includes('Checked only one project, so placed after everyone else.'));
+  assert.ok(!at('soph').flags.some(x=>/after everyone else/.test(x)));
+  // A listed leader of a is placed there, even though they checked only a.
+  r=E.sort([senior,soph],projects,cfg,{a:{leaders:['senior']}});
+  assert.equal(at('senior').project1,'a'); assert.ok(!at('senior').flags.some(x=>/after everyone else/.test(x)));
+  // No projects checked gets its own flag.
+  r=E.sort([s('none',{grade:12,choices:[]})],[p('a')],config({projectCount:1}),{});
+  assert.ok(at('none').flags.includes('Checked no projects, so placed after everyone else.'));
 });
