@@ -198,3 +198,43 @@ test('a student who checked one project or none is placed after everyone else, u
   r=E.sort([s('none',{grade:12,choices:[]})],[p('a')],config({projectCount:1}),{});
   assert.ok(at('none').flags.includes('Checked no projects, so placed after everyone else.'));
 });
+
+// Two Majors and two Minors, with two students taking Minors. The three seniors all want a; b suits nobody.
+const leaderRun=()=>({projects:[p('a'),p('b','Major',{types:['feet'],goals:['1']}),p('m1','Minor'),p('m2','Minor')],cfg:config({projectCount:4,minorProjects:2,minorMin:2,minorTarget:2,minorMax:2}),
+  others:[s('x',{preference:'Minor',choices:['m1','m2']}),s('y',{preference:'Minor',choices:['m1','m2']}),s('j1',{grade:12}),s('j2',{grade:12}),s('j3',{grade:12})]});
+test('the leader of a Major who asked for Minors is placed in that Major for both weeks',()=>{
+  const {projects,cfg,others}=leaderRun();
+  const r=E.sort([s('lead',{grade:10,preference:'Minor',choices:['m1','m2']}),...others],projects,cfg,{a:{leaders:['lead']}}),at=id=>r.assignments.find(a=>a.studentId===id);
+  assert.equal(at('lead').project1,'a'); assert.equal(at('lead').project2,null);
+  assert.equal(at('lead').flags[0],'Leading a, so placed there.');
+  assert.ok(at('x').project2 && at('y').project2); assert.equal(errors(r).length,0);
+  // Leaders count toward the group size: the four Major students split two and two, so only one of
+  // the seniors who wanted a joins the leader there.
+  assert.equal(r.assignments.filter(x=>x.project1==='a').length,2);
+  assert.equal(['j1','j2','j3'].filter(id=>at(id).project1==='a').length,1);
+});
+test('a Minor leader is in the Minor they lead one week and a different Minor the other week',()=>{
+  const {projects,cfg,others}=leaderRun();
+  const r=E.sort([s('lead',{grade:12,preference:'Major'}),...others],projects,{...cfg,minorMin:3,minorTarget:3,minorMax:3},{m2:{leaders:['lead']}}),lead=r.assignments.find(a=>a.studentId==='lead');
+  assert.deepEqual([lead.project1,lead.project2].sort(),['m1','m2']);
+  assert.ok(lead.flags.includes('Leading m2, so placed there.')); assert.ok(!lead.flags.some(x=>/asked for a Major/.test(x)));
+});
+test('a leader who did the project last year is allowed to lead it again',()=>{
+  const {projects,cfg,others}=leaderRun();
+  const r=E.sort([s('lead',{grade:11,previous:['a']}),...others],projects,cfg,{a:{leaders:['lead']}}),lead=r.assignments.find(a=>a.studentId==='lead');
+  assert.equal(lead.project1,'a'); assert.ok(lead.flags.includes('Previous-project exception: named leader of a.'));
+  assert.ok(!r.checks.some(c=>c.code==='PREVIOUS_PROJECT'));
+});
+test('a leader of a project that is not running gets an error naming them and is placed by the normal rules',()=>{
+  const {projects,cfg,others}=leaderRun(),all=[...projects,p('c')];
+  const r=E.sort([s('lead',{grade:12,name:'Example Leader'}),...others],all,cfg,{c:{run:false,leaders:['lead']}}),lead=r.assignments.find(a=>a.studentId==='lead');
+  const problem=r.issues.find(i=>i.code==='LEADER_NOT_PLACED');
+  assert.equal(problem.severity,'error'); assert.equal(problem.studentId,'lead'); assert.match(problem.message,/^Example Leader is listed as a leader of c, which isn't running/);
+  assert.equal(lead.status,'placed'); assert.ok(['a','b'].includes(lead.project1)); assert.ok(!lead.flags.some(x=>/^Leading/.test(x)));
+  // Listed for two projects, or on a trip: an error, and no leader placement.
+  const two=E.sort([s('lead',{grade:12})],projects,cfg,{a:{leaders:['lead']},b:{leaders:['lead']}});
+  assert.match(two.issues.find(i=>i.code==='LEADER_NOT_PLACED').message,/leader of a and b\. A student can lead only one project/);
+  const trip=E.sort([s('lead',{grade:12,status:'trip'}),...others],projects,cfg,{a:{leaders:['lead']}});
+  assert.match(trip.issues.find(i=>i.code==='LEADER_NOT_PLACED').message,/on an ExEd trip, so they were not placed there\./);
+  assert.equal(trip.assignments.find(a=>a.studentId==='lead').status,'excluded');
+});
