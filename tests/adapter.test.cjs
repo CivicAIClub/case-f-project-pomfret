@@ -627,8 +627,8 @@ test('Setup adds Max size to an older Project choices tab and keeps its values; 
   const f = fixture(true); f.adapter.practice();
   const choices = f.sheets.get('Project choices').data;
   assert.equal(choices[0][7], 'Max size');
-  // Make it look like a tab from before this round, with a decision in it.
-  choices.forEach(r => r.splice(7, 1)); choices[1][2] = true;
+  // Make it look like a tab from before round 2, with a decision in it.
+  choices.forEach(r => r.splice(7)); choices[1][2] = true;
   const before = JSON.stringify(choices);
   f.adapter.setup();
   assert.equal(choices[0][7], 'Max size');
@@ -644,4 +644,26 @@ test('Setup adds Max size to an older Project choices tab and keeps its values; 
   assert.match(String(summary.get('Group size: ' + big.projects.find(p => p.finalLength === 'Minor').name)), /^Week 1: \d+, week 2: \d+$/);
   choices.find(r => r[0] === popular)[7] = 15;
   assert.throws(() => f.adapter.sort('Too big'), /Max size must be a whole number from 1 to 14/);
+});
+
+test('Setup adds Faculty and Location to an older Project choices tab and keeps every value; Faculty can list several names', () => {
+  const f = fixture(true); f.adapter.practice();
+  const choices = f.sheets.get('Project choices').data;
+  assert.deepEqual(choices[0].slice(7), ['Max size', 'Faculty', 'Location']);
+  // A tab from round 2, with decisions in it.
+  choices.forEach(r => r.splice(8)); choices[1][2] = true; choices[2][7] = 12;
+  const before = JSON.stringify(choices);
+  f.adapter.setup();
+  assert.deepEqual(choices[0].slice(7), ['Max size', 'Faculty', 'Location']);
+  assert.equal(JSON.stringify(choices.map(r => r.slice(0, 8))), before);
+  choices[1][8] = 'Ms. Rivera,Mr. Chen ,  '; choices[1][9] = 'Room 12';
+  f.adapter.setup();
+  assert.deepEqual([choices[1][8], choices[1][9]], ['Ms. Rivera,Mr. Chen ,  ', 'Room 12']);
+  const details = f.adapter.readDetails();
+  assert.deepEqual({ ...details[choices[1][0]] }, { faculty: 'Ms. Rivera, Mr. Chen', location: 'Room 12' });
+  assert.deepEqual({ ...details[choices[3][0]] }, { faculty: '', location: '' });
+  // The sort never reads them: the same groups with or without.
+  const withNames = f.adapter.sort('With faculty').assignments.map(a => [a.studentId, a.project1, a.project2]);
+  choices.forEach((r, i) => { if (i) r[8] = r[9] = ''; });
+  assert.deepEqual(f.adapter.sort('Without faculty').assignments.map(a => [a.studentId, a.project1, a.project2]), withNames);
 });

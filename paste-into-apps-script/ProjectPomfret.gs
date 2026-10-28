@@ -1739,7 +1739,8 @@ var PPAdapter = (function () {
   var FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
   var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
   var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
-  var CHOICE_HEADERS = ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with", 'Max size'];
+  // Faculty and Location are only shown on the results tabs. The sort never reads them.
+  var CHOICE_HEADERS = ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with", 'Max size', 'Faculty', 'Location'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
   function text(v) { return v == null ? '' : String(v).trim(); }
   function safeCell(v) {
@@ -1849,7 +1850,7 @@ var PPAdapter = (function () {
     var have = records('Settings', ['Setting'], true).map(function (r) { return text(r.Setting); });
     Object.keys(PPEngine.defaults).forEach(function (k) { if (have.indexOf(k) < 0) appendRecord('Settings', { Setting: k, Value: PPEngine.defaults[k], Notes: SETTING_NOTES[k] || '' }); });
     var projects = nonempty(sheet('Projects')) ? readProjects().projects : PPCatalog;
-    seed('Project choices', CHOICE_HEADERS, projects.map(function (p) { return [p.id, p.name, '', '', false, '', '', '']; }));
+    seed('Project choices', CHOICE_HEADERS, projects.map(function (p) { return [p.id, p.name, '', '', false, '', '', '', '', '']; }));
     addColumns('Project choices', CHOICE_HEADERS);
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
@@ -1918,6 +1919,15 @@ var PPAdapter = (function () {
         return other.id;
       });
       result[id] = choice;
+    });
+    return result;
+  }
+  // Faculty (several names, separated by commas) and Location for each project, read fresh each time
+  // so Check again shows the current names. Blank stays blank.
+  function details() {
+    var result = {};
+    records('Project choices', ['Project ID'], false, ['Faculty', 'Location']).forEach(function (r) {
+      result[text(r['Project ID'])] = { faculty: text(r.Faculty).split(',').map(text).filter(Boolean).join(', '), location: text(r.Location) };
     });
     return result;
   }
@@ -2290,7 +2300,7 @@ var PPAdapter = (function () {
     setup();
     return { message: 'Created 240 invented students. No real student records were used.' };
   }
-  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
+  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, readDetails: details, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
 }());
 
 function onOpen() {
