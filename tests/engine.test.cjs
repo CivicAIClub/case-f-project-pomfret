@@ -922,3 +922,25 @@ test('a student listed as Nonbinary counts as neither Male nor Female, never mov
   assert.equal(spot(on,'a2').project1,spot(off,'a2').project1); assert.doesNotMatch(spot(on,'a2').reason,/balance the groups/);
   assert.ok(on.checks.concat(off.checks).every(c=>!/unknown/i.test(c.message)));
 });
+
+test('a lock or a move by hand into last year\'s project is information with a flag; the sort putting a student there is still an error',()=>{
+  const projects=[p('a'),p('b','Major',{goals:['9']})],cfg=config({maxSize:3});
+  const students=[s('rep',{previous:['a']}),s('fan'),s('other',{choices:['b','z'],goals:['9']})];
+  // Locked into a, last year's project.
+  const r=E.sort(students,projects,cfg,{},{locks:[{email:'rep@example.org',name:'',project1:'a',project2:'',row:2}]}),rep=r.assignments.find(a=>a.studentId==='rep');
+  assert.deepEqual([rep.project1,rep.locked],['a',true]);
+  assert.ok(rep.flags.includes("In last year's project because of a lock."));
+  const repeat=r.checks.filter(c=>c.code==='PREVIOUS_PROJECT');
+  assert.deepEqual(repeat.map(c=>[c.severity,c.message,c.studentId]),[['info',"In last year's project because of a lock.",'rep']]);
+  assert.deepEqual(errors(r),[]);
+  // Moved there by hand, the way Check again sends it: information, and explain gives the flag.
+  const placed=r.projects,row=extra=>({studentId:'rep',status:'placed',project1:'a',project2:null,fit1:E.fit(students[0],projects[0]).tier,fit2:null,...extra});
+  const others=r.assignments.filter(a=>a.studentId!=='rep');
+  let checks=E.check(students,placed,[row({movedByHand:true}),...others],cfg,{}).filter(c=>c.code==='PREVIOUS_PROJECT');
+  assert.deepEqual(checks.map(c=>[c.severity,c.message]),[['info',"In last year's project because of a move by hand."]]);
+  assert.ok(E.explain(students[0],['a'],placed,cfg,{},true,'hand').flags.includes("In last year's project because of a move by hand."));
+  assert.ok(!E.explain(students[0],['b'],placed,cfg,{},true,'hand').flags.some(f=>/last year's project/.test(f)));
+  // The sort itself never does this, but if an assignment says so, it is an error.
+  checks=E.check(students,placed,[row({}),...others],cfg,{}).filter(c=>c.code==='PREVIOUS_PROJECT');
+  assert.deepEqual(checks.map(c=>c.severity),['error']);
+});

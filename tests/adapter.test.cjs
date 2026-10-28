@@ -347,7 +347,7 @@ test('Check again reports groups that hand moves push over the maximum or under 
   assert.ok(checks.some(c => c.code === 'OVER_CAPACITY' && c.severity === 'error' && c.projectId === to.id));
   assert.ok(checks.some(c => c.code === 'UNDER_MINIMUM' && c.severity === 'error' && c.projectId === from.id));
 });
-test('Check again reports a hand move into last year\'s project', () => {
+test('Check again reports a hand move into last year\'s project as information, with a flag', () => {
   let { f, run } = practiceRun('Before the last-year answer');
   const first = placedRows(f, run).find(x => x.tab === 'PP Junior' && !x.a.project2), id = first.row[0];
   const to = run.projects.find(p => p.finalLength === 'Major' && p.id !== first.a.project1);
@@ -357,7 +357,11 @@ test('Check again reports a hand move into last year\'s project', () => {
   const pick = placedRows(f, run).find(x => x.row[0] === id);
   assert.notEqual(pick.a.project1, to.id);
   pick.row[2] = pick.row[3] = label(to);
-  assert.ok(f.adapter.checkAgain().some(c => c.code === 'PREVIOUS_PROJECT' && c.severity === 'error' && c.studentId === id));
+  const checks = [...f.adapter.checkAgain()].filter(c => c.code === 'PREVIOUS_PROJECT' && c.studentId === id);
+  assert.deepEqual(checks.map(c => [c.severity, c.message]), [['info', "In last year's project because of a move by hand."]]);
+  assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'info' && r[1] === 'PREVIOUS_PROJECT' && r[3] === id));
+  assert.ok(!f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'PREVIOUS_PROJECT'));
+  assert.match(f.sheets.get('PP Junior').data.find(r => r[0] === id)[8], /In last year's project because of a move by hand\./);
 });
 test('Check again reports a gender rule a hand move breaks when gender data exists', () => {
   const odd = 'practice1@example.org';

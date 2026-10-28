@@ -599,7 +599,7 @@ var PPAdapter = (function () {
     // Sort would, write it back, and let the checks below report any rule the move breaks.
     function moveByHand(tab, header, r, a, student, original) {
       var ids = [a.project1, a.project2].filter(Boolean);
-      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
+      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, 'hand') : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
       a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
       if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
       var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };

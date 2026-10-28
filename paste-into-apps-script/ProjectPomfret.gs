@@ -1333,13 +1333,16 @@ var PPEngine = (function () {
   // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
   // when a student is moved by hand. byHand drops the note about the Minor student minimum, which
   // doesn't apply to a student placed on purpose (by hand, by a lock or as a leader). locked also
-  // drops the Fit 6 flag, because a person chose those projects (by hand or with a lock). after[i],
-  // when given, ends the reason for project i (for a Minor, that week's part).
+  // drops the Fit 6 flag, because a person chose those projects (by hand or with a lock). locked is
+  // 'hand' for a move by hand and true for a lock; either way a project from last year is a person's
+  // decision, and the flag says which. after[i], when given, ends the reason for project i (for a
+  // Minor, that week's part).
   var minimumFlag='This student asked for a Major but received Minors to reach the Minor student minimum.';
+  function repeatNote(byHand){return "In last year's project because of a "+(byHand?'move by hand':'lock')+'.';}
   function explain(s,ids,projects,input,choices,byHand,locked,after){
     var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
     var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
-    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push(minimumFlag);if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(!locked&&fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
+    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push(minimumFlag);if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(!locked&&fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');if(locked&&arr(ids).some(function(id){return !allowed(s,byId[id],choices);}))flags.push(repeatNote(locked==='hand'));
     var parts=fits.map(function(f,i){return f.reason+(after&&after[i]?' '+after[i]:'');});
     return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:parts.length>1?'Week 1: '+parts[0]+' Week 2: '+parts[1]:parts.length?parts[0]:'',flags:flags};
   }
@@ -1736,7 +1739,9 @@ var PPEngine = (function () {
       else{if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));}
       if(p1)members[p1.id][0].push(s);if(p2)members[p2.id][1].push(s);
       // A fit 6 that a person chose, with a lock or by hand, isn't a warning.
-      [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6&&a.locked!==true&&a.movedByHand!==true)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
+      // Last year's project is an error only when the sort put the student there. A lock or a move by
+      // hand is a person's decision, so it is information.
+      [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(a.locked===true||a.movedByHand===true?note('PREVIOUS_PROJECT','info',repeatNote(a.movedByHand===true),{studentId:s.id,projectId:p.id}):note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6&&a.locked!==true&&a.movedByHand!==true)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
       // A track change made by hand, with a lock or by followChecksOverTrack is a decision someone
       // made, so it is information only.
       var decided=a.locked===true?' Locked in place.':a.movedByHand===true?' Moved by hand.':follows[s.id]?' Placed by what they checked.':'';
@@ -2369,7 +2374,7 @@ var PPAdapter = (function () {
     // Sort would, write it back, and let the checks below report any rule the move breaks.
     function moveByHand(tab, header, r, a, student, original) {
       var ids = [a.project1, a.project2].filter(Boolean);
-      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
+      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, 'hand') : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
       a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
       if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
       var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };
