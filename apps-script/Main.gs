@@ -224,25 +224,26 @@ var PPAdapter = (function () {
     if (!labels.length) return null;
     return SpreadsheetApp.newDataValidation().requireValueInList(labels, true).setAllowInvalid(false).setHelpText('Pick a running MAJ- or MIN- project, or clear the cell.').build();
   }
-  function output(input, result) {
-    var studentsById = {}, assignmentsById = {}, dropdown = projectDropdown(result.projects);
-    input.students.forEach(function (s) { studentsById[s.id] = s; });
+  // Like the master list, a Major shows its MAJ- label in both columns.
+  function secondProject(a, projects) { return a.project2 || (lengthOf(a.project1, projects) === 'Major' ? a.project1 : null); }
+  function writeGradeTabs(students, result) {
+    var assignmentsById = {}, dropdown = projectDropdown(result.projects);
     result.assignments.forEach(function (a) { assignmentsById[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade) {
       var name = masterName(grade), old = sheet(name);
       // The last run's dropdowns may list projects that no longer run.
       if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
-      var rows = input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
+      var rows = students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        // Like the master list, a Major shows its MAJ- label in both columns.
-        var second = a.project2 || (lengthOf(a.project1, result.projects) === 'Major' ? a.project1 : null);
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(second, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
       });
       var tab = write(name, MASTER_HEADERS, rows);
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
-    var oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); });
-    var newRegistry = [];
+  }
+  function writeGroupTabs(students, result) {
+    var studentsById = {}, oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); }), newRegistry = [];
+    students.forEach(function (s) { studentsById[s.id] = s; });
     result.projects.forEach(function (p, index) {
       var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), rows = [];
       result.assignments.forEach(function (a) {
@@ -260,13 +261,49 @@ var PPAdapter = (function () {
       }
     });
     write('PP Project tabs', ['Project ID', 'Project', 'Sheet', 'Length'], newRegistry);
-    var summaryRows = Object.keys(result.summary).filter(function (k) { return typeof result.summary[k] !== 'object'; }).map(function (k) { return [k, result.summary[k]]; });
-    Object.keys(result.summary.fitCounts || {}).forEach(function (tier) { summaryRows.push(['Fit ' + tier + ' placements', result.summary.fitCounts[tier]]); });
-    [12, 11, 10].forEach(function (grade) { var g = (result.summary.byGrade || {})[grade]; if (g) { summaryRows.push(['Grade ' + grade + ' placed', g.placed], ['Grade ' + grade + ' mean fit', g.meanFit == null ? 'Not available' : g.meanFit]); } });
-    write('PP Summary', ['Metric', 'Value'], summaryRows.concat([['Fingerprint', result.fingerprint], ['Review status', 'Proposed groups. Read PP Check and PP Needs you before use.']]));
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { return a.status === 'review' || (a.flags || []).length || (studentsById[a.studentId].issues || []).length; }).map(function (a) {
+  }
+  var GRADE_WORDS = { 12: 'Seniors', 11: 'Juniors', 10: 'Sophomores' };
+  var SUMMARY_LABELS = [['total', 'Students'], ['eligible', 'Students who can be placed'], ['placed', 'Placed'], ['excluded', 'Excluded (trip or freshman leader)'], ['needsReview', 'Need review'], ['majorStudents', 'Major students'], ['minorStudents', 'Minor students'], ['projectCount', 'Projects running'], ['minorProjectCount', 'Minor projects running']];
+  function summaryRows(summary) {
+    var rows = SUMMARY_LABELS.filter(function (l) { return summary[l[0]] !== undefined; }).map(function (l) { return [l[1], summary[l[0]]]; });
+    Object.keys(summary.fitCounts || {}).forEach(function (tier) { rows.push(['Placements at fit ' + tier, summary.fitCounts[tier]]); });
+    [12, 11, 10].forEach(function (grade) {
+      var g = (summary.byGrade || {})[grade], who = GRADE_WORDS[grade];
+      if (!g) return;
+      rows.push([who + ' placed', g.placed]);
+      if (g.major) rows.push([who + ' in a Major they checked', g.major.checked], [who + " in a Major they didn't check", g.major.notChecked]);
+      if (g.minor) rows.push([who + ' in Minors, both weeks checked', g.minor.bothChecked], [who + ' in Minors, one week checked', g.minor.oneChecked], [who + ' in Minors, neither week checked', g.minor.noneChecked]);
+      Object.keys(g.fits || {}).forEach(function (tier) { rows.push([who + ' placements at fit ' + tier, g.fits[tier]]); });
+      rows.push([who + ' average fit', g.meanFit == null ? 'Not available' : Math.round(g.meanFit * 100) / 100]);
+    });
+    return rows;
+  }
+  // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
+  function writeSeniorsToCheck(students, result) {
+    var byId = {}; students.forEach(function (s) { byId[s.id] = s; });
+    var rows = result.assignments.filter(function (a) {
+      var s = byId[a.studentId];
+      return s && s.grade === 12 && a.status === 'placed' && [a.project1, a.project2].filter(Boolean).some(function (id) { return (s.choices || []).indexOf(id) < 0; });
+    }).map(function (a) {
+      var s = byId[a.studentId];
+      return [s.name, s.email, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.reason];
+    }).sort(function (a, b) { return String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])); });
+    write('PP Seniors to check', ['Name', 'Email', 'Project #1', 'Project #2', 'Reason'], rows);
+  }
+  // Everything that follows from the placements. Check again rebuilds these from the grade tabs.
+  function writeResults(students, result, status) {
+    var studentsById = {};
+    students.forEach(function (s) { studentsById[s.id] = s; });
+    writeGroupTabs(students, result);
+    write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {
       var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; ')];
     }));
+    writeSeniorsToCheck(students, result);
+  }
+  function output(input, result) {
+    writeGradeTabs(input.students, result);
+    writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.');
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
   function snapshot(input, result, config, decisions) {

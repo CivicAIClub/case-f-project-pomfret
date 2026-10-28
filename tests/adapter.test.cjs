@@ -385,3 +385,24 @@ test('Setup adds the tieSeed setting and the Tie seed log column to an older she
   assert.equal(log[0][7], 'Tie seed');
   assert.equal(f.sheets.get('PP Run log').data[1][7], 2026);
 });
+
+test('PP Summary shows each grade\'s placements, and PP Seniors to check lists seniors in a project they did not check', () => {
+  // One invented senior checked only a cancelled project, so they can't get a project they checked.
+  const { f, run } = practiceRun('Results summary practice', f => { f.sheets.get('Senior').data[1][7] = 'Derelict Sculpture'; });
+  const rows = new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  const parts = [' in a Major they checked', " in a Major they didn't check", ' in Minors, both weeks checked', ' in Minors, one week checked', ' in Minors, neither week checked'];
+  for (const [who, grade] of [['Seniors', 12], ['Juniors', 11], ['Sophomores', 10]]) {
+    assert.equal(parts.reduce((n, part) => n + rows.get(who + part), 0), rows.get(who + ' placed'), who);
+    const placements = [...run.assignments.values()].filter(a => a.status === 'placed' && run.students.get(a.studentId).grade === grade).reduce((n, a) => n + (a.project2 ? 2 : 1), 0);
+    assert.equal([1, 2, 3, 4, 5, 6].reduce((n, t) => n + rows.get(who + ' placements at fit ' + t), 0), placements, who);
+  }
+  assert.equal(rows.get('Seniors placed') + rows.get('Juniors placed') + rows.get('Sophomores placed'), rows.get('Placed'));
+  const expected = [...run.assignments.values()].filter(a => {
+    const s = run.students.get(a.studentId);
+    return s.grade === 12 && a.status === 'placed' && [a.project1, a.project2].filter(Boolean).some(id => !s.choices.includes(id));
+  }).map(a => run.students.get(a.studentId).email).sort();
+  const listed = f.sheets.get('PP Seniors to check').data;
+  assert.deepEqual(listed[0], ['Name', 'Email', 'Project #1', 'Project #2', 'Reason']);
+  assert.ok(expected.includes('practice1@example.org'));
+  assert.deepEqual(listed.slice(1).map(r => r[1]).sort(), expected);
+});

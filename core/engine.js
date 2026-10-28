@@ -227,9 +227,16 @@ var PPEngine = (function () {
     var inputs=students.map(function(s){return {id:s.id,grade:s.grade,status:s.status,preference:s.preference,choices:arr(s.choices).slice().sort(compare),types:arr(s.types).slice().sort(compare),goals:arr(s.goals).slice().sort(compare),previous:arr(s.previous).slice().sort(compare),previousKnown:s.previousKnown!==false,gender:s.gender||null};}).sort(function(a,b){return compare(a.id,b.id);});
     return {assignments:assignments,projects:selected,issues:issues,checks:checks,summary:summary,fingerprint:fingerprint({settings:cfg,choices:choices||{},inputs:inputs,projects:selected,assignments:assignments.slice().sort(function(a,b){return compare(a.studentId,b.studentId);})})};
   }
+  // Counts for PP Summary. For each grade: placed students, whether they got projects they checked
+  // (a Minor student counts both weeks, one week or neither), and placements at each fit.
   function summarize(students,projects,assignments){
-    var s={total:students.length,eligible:students.filter(eligible).length,placed:0,excluded:0,needsReview:0,majorStudents:0,minorStudents:0,projectCount:projects.length,minorProjectCount:projects.filter(function(p){return p.finalLength==='Minor';}).length,fitCounts:{1:0,2:0,3:0,4:0,5:0,6:0},byGrade:{10:{placed:0,meanFit:null},11:{placed:0,meanFit:null},12:{placed:0,meanFit:null}}},byId={},totals={10:[0,0],11:[0,0],12:[0,0]};students.forEach(function(x){byId[x.id]=x;});
-    assignments.forEach(function(a){if(a.status==='excluded'){s.excluded++;return;}if(a.status!=='placed'){s.needsReview++;return;}s.placed++;if(a.project2)s.minorStudents++;else s.majorStudents++;var st=byId[a.studentId];if(!st)return;s.byGrade[st.grade].placed++;[a.fit1,a.fit2].forEach(function(t){if(t!=null){s.fitCounts[t]=(s.fitCounts[t]||0)+1;totals[st.grade][0]+=t;totals[st.grade][1]++;}});});Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});return s;
+    var s={total:students.length,eligible:students.filter(eligible).length,placed:0,excluded:0,needsReview:0,majorStudents:0,minorStudents:0,projectCount:projects.length,minorProjectCount:projects.filter(function(p){return p.finalLength==='Minor';}).length,fitCounts:{1:0,2:0,3:0,4:0,5:0,6:0},byGrade:{}},byId={},totals={};students.forEach(function(x){byId[x.id]=x;});
+    [10,11,12].forEach(function(g){s.byGrade[g]={placed:0,meanFit:null,major:{checked:0,notChecked:0},minor:{bothChecked:0,oneChecked:0,noneChecked:0},fits:{1:0,2:0,3:0,4:0,5:0,6:0}};totals[g]=[0,0];});
+    assignments.forEach(function(a){if(a.status==='excluded'){s.excluded++;return;}if(a.status!=='placed'){s.needsReview++;return;}s.placed++;if(a.project2)s.minorStudents++;else s.majorStudents++;var st=byId[a.studentId];if(!st||!s.byGrade[st.grade])return;var g=s.byGrade[st.grade];g.placed++;
+      var checked=[a.project1,a.project2].filter(function(id){return id&&arr(st.choices).indexOf(id)>=0;}).length;
+      if(a.project2){if(checked===2)g.minor.bothChecked++;else if(checked===1)g.minor.oneChecked++;else g.minor.noneChecked++;}else if(checked)g.major.checked++;else g.major.notChecked++;
+      [a.fit1,a.fit2].forEach(function(t){if(t!=null){s.fitCounts[t]=(s.fitCounts[t]||0)+1;g.fits[t]=(g.fits[t]||0)+1;totals[st.grade][0]+=t;totals[st.grade][1]++;}});});
+    Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});return s;
   }
   function check(students,projects,assignments,input,choices){
     var cfg=settings(input),out=[],studentMap={},projectMap={},seen={},members={},validStatuses=['placed','excluded','review'];
@@ -260,6 +267,6 @@ var PPEngine = (function () {
     return out;
   }
   function fingerprint(value){function stable(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(stable).join(',')+']';return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';}var str=stable(value),h=2166136261;for(var i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return ('00000000'+(h>>>0).toString(16)).slice(-8);}
-  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,fingerprint:fingerprint};
+  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,summarize:summarize,fingerprint:fingerprint};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;

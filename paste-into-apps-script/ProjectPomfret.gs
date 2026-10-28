@@ -1230,9 +1230,16 @@ var PPEngine = (function () {
     var inputs=students.map(function(s){return {id:s.id,grade:s.grade,status:s.status,preference:s.preference,choices:arr(s.choices).slice().sort(compare),types:arr(s.types).slice().sort(compare),goals:arr(s.goals).slice().sort(compare),previous:arr(s.previous).slice().sort(compare),previousKnown:s.previousKnown!==false,gender:s.gender||null};}).sort(function(a,b){return compare(a.id,b.id);});
     return {assignments:assignments,projects:selected,issues:issues,checks:checks,summary:summary,fingerprint:fingerprint({settings:cfg,choices:choices||{},inputs:inputs,projects:selected,assignments:assignments.slice().sort(function(a,b){return compare(a.studentId,b.studentId);})})};
   }
+  // Counts for PP Summary. For each grade: placed students, whether they got projects they checked
+  // (a Minor student counts both weeks, one week or neither), and placements at each fit.
   function summarize(students,projects,assignments){
-    var s={total:students.length,eligible:students.filter(eligible).length,placed:0,excluded:0,needsReview:0,majorStudents:0,minorStudents:0,projectCount:projects.length,minorProjectCount:projects.filter(function(p){return p.finalLength==='Minor';}).length,fitCounts:{1:0,2:0,3:0,4:0,5:0,6:0},byGrade:{10:{placed:0,meanFit:null},11:{placed:0,meanFit:null},12:{placed:0,meanFit:null}}},byId={},totals={10:[0,0],11:[0,0],12:[0,0]};students.forEach(function(x){byId[x.id]=x;});
-    assignments.forEach(function(a){if(a.status==='excluded'){s.excluded++;return;}if(a.status!=='placed'){s.needsReview++;return;}s.placed++;if(a.project2)s.minorStudents++;else s.majorStudents++;var st=byId[a.studentId];if(!st)return;s.byGrade[st.grade].placed++;[a.fit1,a.fit2].forEach(function(t){if(t!=null){s.fitCounts[t]=(s.fitCounts[t]||0)+1;totals[st.grade][0]+=t;totals[st.grade][1]++;}});});Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});return s;
+    var s={total:students.length,eligible:students.filter(eligible).length,placed:0,excluded:0,needsReview:0,majorStudents:0,minorStudents:0,projectCount:projects.length,minorProjectCount:projects.filter(function(p){return p.finalLength==='Minor';}).length,fitCounts:{1:0,2:0,3:0,4:0,5:0,6:0},byGrade:{}},byId={},totals={};students.forEach(function(x){byId[x.id]=x;});
+    [10,11,12].forEach(function(g){s.byGrade[g]={placed:0,meanFit:null,major:{checked:0,notChecked:0},minor:{bothChecked:0,oneChecked:0,noneChecked:0},fits:{1:0,2:0,3:0,4:0,5:0,6:0}};totals[g]=[0,0];});
+    assignments.forEach(function(a){if(a.status==='excluded'){s.excluded++;return;}if(a.status!=='placed'){s.needsReview++;return;}s.placed++;if(a.project2)s.minorStudents++;else s.majorStudents++;var st=byId[a.studentId];if(!st||!s.byGrade[st.grade])return;var g=s.byGrade[st.grade];g.placed++;
+      var checked=[a.project1,a.project2].filter(function(id){return id&&arr(st.choices).indexOf(id)>=0;}).length;
+      if(a.project2){if(checked===2)g.minor.bothChecked++;else if(checked===1)g.minor.oneChecked++;else g.minor.noneChecked++;}else if(checked)g.major.checked++;else g.major.notChecked++;
+      [a.fit1,a.fit2].forEach(function(t){if(t!=null){s.fitCounts[t]=(s.fitCounts[t]||0)+1;g.fits[t]=(g.fits[t]||0)+1;totals[st.grade][0]+=t;totals[st.grade][1]++;}});});
+    Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});return s;
   }
   function check(students,projects,assignments,input,choices){
     var cfg=settings(input),out=[],studentMap={},projectMap={},seen={},members={},validStatuses=['placed','excluded','review'];
@@ -1263,7 +1270,7 @@ var PPEngine = (function () {
     return out;
   }
   function fingerprint(value){function stable(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(stable).join(',')+']';return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';}var str=stable(value),h=2166136261;for(var i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return ('00000000'+(h>>>0).toString(16)).slice(-8);}
-  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,fingerprint:fingerprint};
+  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,summarize:summarize,fingerprint:fingerprint};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
 
@@ -1493,25 +1500,26 @@ var PPAdapter = (function () {
     if (!labels.length) return null;
     return SpreadsheetApp.newDataValidation().requireValueInList(labels, true).setAllowInvalid(false).setHelpText('Pick a running MAJ- or MIN- project, or clear the cell.').build();
   }
-  function output(input, result) {
-    var studentsById = {}, assignmentsById = {}, dropdown = projectDropdown(result.projects);
-    input.students.forEach(function (s) { studentsById[s.id] = s; });
+  // Like the master list, a Major shows its MAJ- label in both columns.
+  function secondProject(a, projects) { return a.project2 || (lengthOf(a.project1, projects) === 'Major' ? a.project1 : null); }
+  function writeGradeTabs(students, result) {
+    var assignmentsById = {}, dropdown = projectDropdown(result.projects);
     result.assignments.forEach(function (a) { assignmentsById[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade) {
       var name = masterName(grade), old = sheet(name);
       // The last run's dropdowns may list projects that no longer run.
       if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
-      var rows = input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
+      var rows = students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        // Like the master list, a Major shows its MAJ- label in both columns.
-        var second = a.project2 || (lengthOf(a.project1, result.projects) === 'Major' ? a.project1 : null);
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(second, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
       });
       var tab = write(name, MASTER_HEADERS, rows);
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
-    var oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); });
-    var newRegistry = [];
+  }
+  function writeGroupTabs(students, result) {
+    var studentsById = {}, oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); }), newRegistry = [];
+    students.forEach(function (s) { studentsById[s.id] = s; });
     result.projects.forEach(function (p, index) {
       var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), rows = [];
       result.assignments.forEach(function (a) {
@@ -1529,13 +1537,49 @@ var PPAdapter = (function () {
       }
     });
     write('PP Project tabs', ['Project ID', 'Project', 'Sheet', 'Length'], newRegistry);
-    var summaryRows = Object.keys(result.summary).filter(function (k) { return typeof result.summary[k] !== 'object'; }).map(function (k) { return [k, result.summary[k]]; });
-    Object.keys(result.summary.fitCounts || {}).forEach(function (tier) { summaryRows.push(['Fit ' + tier + ' placements', result.summary.fitCounts[tier]]); });
-    [12, 11, 10].forEach(function (grade) { var g = (result.summary.byGrade || {})[grade]; if (g) { summaryRows.push(['Grade ' + grade + ' placed', g.placed], ['Grade ' + grade + ' mean fit', g.meanFit == null ? 'Not available' : g.meanFit]); } });
-    write('PP Summary', ['Metric', 'Value'], summaryRows.concat([['Fingerprint', result.fingerprint], ['Review status', 'Proposed groups. Read PP Check and PP Needs you before use.']]));
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { return a.status === 'review' || (a.flags || []).length || (studentsById[a.studentId].issues || []).length; }).map(function (a) {
+  }
+  var GRADE_WORDS = { 12: 'Seniors', 11: 'Juniors', 10: 'Sophomores' };
+  var SUMMARY_LABELS = [['total', 'Students'], ['eligible', 'Students who can be placed'], ['placed', 'Placed'], ['excluded', 'Excluded (trip or freshman leader)'], ['needsReview', 'Need review'], ['majorStudents', 'Major students'], ['minorStudents', 'Minor students'], ['projectCount', 'Projects running'], ['minorProjectCount', 'Minor projects running']];
+  function summaryRows(summary) {
+    var rows = SUMMARY_LABELS.filter(function (l) { return summary[l[0]] !== undefined; }).map(function (l) { return [l[1], summary[l[0]]]; });
+    Object.keys(summary.fitCounts || {}).forEach(function (tier) { rows.push(['Placements at fit ' + tier, summary.fitCounts[tier]]); });
+    [12, 11, 10].forEach(function (grade) {
+      var g = (summary.byGrade || {})[grade], who = GRADE_WORDS[grade];
+      if (!g) return;
+      rows.push([who + ' placed', g.placed]);
+      if (g.major) rows.push([who + ' in a Major they checked', g.major.checked], [who + " in a Major they didn't check", g.major.notChecked]);
+      if (g.minor) rows.push([who + ' in Minors, both weeks checked', g.minor.bothChecked], [who + ' in Minors, one week checked', g.minor.oneChecked], [who + ' in Minors, neither week checked', g.minor.noneChecked]);
+      Object.keys(g.fits || {}).forEach(function (tier) { rows.push([who + ' placements at fit ' + tier, g.fits[tier]]); });
+      rows.push([who + ' average fit', g.meanFit == null ? 'Not available' : Math.round(g.meanFit * 100) / 100]);
+    });
+    return rows;
+  }
+  // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
+  function writeSeniorsToCheck(students, result) {
+    var byId = {}; students.forEach(function (s) { byId[s.id] = s; });
+    var rows = result.assignments.filter(function (a) {
+      var s = byId[a.studentId];
+      return s && s.grade === 12 && a.status === 'placed' && [a.project1, a.project2].filter(Boolean).some(function (id) { return (s.choices || []).indexOf(id) < 0; });
+    }).map(function (a) {
+      var s = byId[a.studentId];
+      return [s.name, s.email, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.reason];
+    }).sort(function (a, b) { return String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])); });
+    write('PP Seniors to check', ['Name', 'Email', 'Project #1', 'Project #2', 'Reason'], rows);
+  }
+  // Everything that follows from the placements. Check again rebuilds these from the grade tabs.
+  function writeResults(students, result, status) {
+    var studentsById = {};
+    students.forEach(function (s) { studentsById[s.id] = s; });
+    writeGroupTabs(students, result);
+    write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {
       var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; ')];
     }));
+    writeSeniorsToCheck(students, result);
+  }
+  function output(input, result) {
+    writeGradeTabs(input.students, result);
+    writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.');
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
   function snapshot(input, result, config, decisions) {

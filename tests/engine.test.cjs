@@ -238,3 +238,18 @@ test('a leader of a project that is not running gets an error naming them and is
   assert.match(trip.issues.find(i=>i.code==='LEADER_NOT_PLACED').message,/on an ExEd trip, so they were not placed there\./);
   assert.equal(trip.assignments.find(a=>a.studentId==='lead').status,'excluded');
 });
+
+test('the summary counts for each grade add up to the students placed in that grade',()=>{
+  const projects=Array.from({length:6},(_,i)=>p('p'+i,i<2?'Minor':'Major',{types:[['hands','head'][i%2]],goals:[String(i+1)]}));
+  const students=Array.from({length:60},(_,i)=>s('st'+String(i).padStart(2,'0'),{grade:10+i%3,preference:i<12?'Minor':'Major',choices:['p'+(i%6),'p'+((i+1)%6)],types:[['hands','head'][i%2]],goals:[String(i%6+1)]}));
+  const r=E.sort(students,projects,config({minSize:1,targetSize:10,maxSize:14,projectCount:6,minorProjects:2,minorMin:0,minorTarget:12,minorMax:20}),{});
+  const grade=id=>students.find(x=>x.id===id).grade;
+  for(const g of [10,11,12]){
+    const b=r.summary.byGrade[g],mine=r.assignments.filter(a=>a.status==='placed'&&grade(a.studentId)===g);
+    assert.equal(b.placed,mine.length);
+    assert.equal(b.major.checked+b.major.notChecked+b.minor.bothChecked+b.minor.oneChecked+b.minor.noneChecked,b.placed);
+    assert.equal(Object.values(b.fits).reduce((x,y)=>x+y,0),mine.reduce((n,a)=>n+(a.project2?2:1),0));
+  }
+  // Some students landed in a project they didn't check, so the split is a real test.
+  assert.ok([10,11,12].some(g=>r.summary.byGrade[g].major.notChecked+r.summary.byGrade[g].minor.oneChecked+r.summary.byGrade[g].minor.noneChecked>0));
+});
