@@ -433,13 +433,16 @@ var PPEngine = (function () {
     });
     // Gender: fix groups that break the rule (no Male students or at least three, and the same for
     // Female) by swapping students between groups in the same week and track. A swap needs every rule
-    // above to still hold and costs each student at most one step. The smallest total drop in fit goes
-    // first, then the swap that drops seniors least, then tie order. Unknown genders never move.
+    // above to still hold, drops each student at most one step, and never moves a student from a
+    // project they checked to one they didn't. The smallest total drop in fit goes first, then the
+    // swap that drops seniors least, then tie order. Unknown genders never move.
     if(move&&cfg.balanceGender){
       var gender={},count={};Object.keys(where).forEach(function(id){gender[id]=genderOf(byId[id].gender);});
       function bad(c){c=c||{Male:0,Female:0};return (c.Male>0&&c.Male<3?1:0)+(c.Female>0&&c.Female<3?1:0);}
       function shifted(c,out,into){var d={Male:0,Female:0};if(c){d.Male=c.Male;d.Female=c.Female;}d[out]--;d[into]++;return d;}
       function better(a,b){for(var i=0;i<a.length;i++)if(a[i]!==b[i])return a[i]<b[i];return false;}
+      // A swap never takes a student out of a project they checked and into one they didn't.
+      function lost(id,from,to){return arr(byId[id].choices).indexOf(from)>=0&&arr(byId[id].choices).indexOf(to)<0;}
       for(var round=0;round<1000;round++){
         count={};Object.keys(where).forEach(function(id){if(gender[id])groupsOf(id).forEach(function(g){var c=count[g]=count[g]||{Male:0,Female:0};c[gender[id]]++;});});
         var best=null,movable=Object.keys(where).filter(function(id){return gender[id]&&!fixed[id];}).sort(run.tie.ids);
@@ -450,7 +453,7 @@ var PPEngine = (function () {
             if(gender[y]===gender[x]||track[y]!==track[x]||h===g)return;
             if(bad(count[g])+bad(count[h])<=bad(shifted(count[g],gender[x],gender[y]))+bad(shifted(count[h],gender[y],gender[x])))return;
             var dx=tier(x,where[y][w])-tier(x,where[x][w]),dy=tier(y,where[x][w])-tier(y,where[y][w]);
-            if(dx>1||dy>1)return;
+            if(dx>1||dy>1||lost(x,where[x][w],where[y][w])||lost(y,where[y][w],where[x][w]))return;
             var score=[dx+dy,(byId[x].grade===12?Math.max(0,dx):0)+(byId[y].grade===12?Math.max(0,dy):0),run.tie.keys[x],run.tie.keys[y]];
             if(best&&!better(score,best.score))return;
             if(!attempt([{id:x,w:w,to:where[y][w]},{id:y,w:w,to:where[x][w]}],function(){return 1;},true,true))best={score:score,x:x,y:y,w:w};
@@ -560,7 +563,7 @@ var PPEngine = (function () {
     return s;
   }
   function check(students,projects,assignments,input,choices,context){
-    var cfg=settings(input),out=[],studentMap={},projectMap={},seen={},members={},validStatuses=['placed','excluded','review'];
+    var cfg=settings(input),out=[],studentMap={},projectMap={},seen={},members={},validStatuses=['placed','excluded','review'],gendered=[];
     students.forEach(function(s){if(studentMap[s.id])out.push(note('DUPLICATE_STUDENT','error','Duplicate source student ID.',{studentId:s.id}));studentMap[s.id]=s;});
     projects.forEach(function(p){if(projectMap[p.id])out.push(note('DUPLICATE_PROJECT','error','Duplicate selected project ID.',{projectId:p.id}));projectMap[p.id]=p;members[p.id]=[[],[]];if(p.enabled===false)out.push(note('CANCELLED_PROJECT','error','Cancelled project is selected.',{projectId:p.id}));if(!['Major','Minor'].includes(p.finalLength))out.push(note('UNRESOLVED_LENGTH','error','Choose whether this project runs as a Major or Minor.',{projectId:p.id}));});
     assignments.forEach(function(a){var s=studentMap[a.studentId];seen[a.studentId]=(seen[a.studentId]||0)+1;if(!s){out.push(note('UNKNOWN_STUDENT','error','Assignment names an unknown student.',{studentId:a.studentId}));return;}if(validStatuses.indexOf(a.status)<0)out.push(note('INVALID_ASSIGNMENT_STATUS','error','Unknown assignment status.',{studentId:s.id}));
@@ -581,9 +584,11 @@ var PPEngine = (function () {
         // The gender rule: a group has no Male students or at least three, and no Female students or at
         // least three. Unknown genders aren't counted, and the message says how many there are.
         var male=0,female=0,unknown=0;list.forEach(function(s){var g=genderOf(s.gender);if(g==='Male')male++;else if(g==='Female')female++;else unknown++;});
-        if((male&&male<3)||(female&&female<3))out.push(note('GENDER_BALANCE','warning',p.name+(weeks===2?', week '+(w+1):'')+': '+female+' Female and '+male+' Male students'+(unknown?' ('+unknown+' with unknown gender)':'')+'. '+(!cfg.balanceGender?'Gender balancing is turned off in Settings.':context&&context.afterSort?"We couldn't fix it without breaking another rule.":'Sort again to try to fix it.'),extra));
+        if((male&&male<3)||(female&&female<3))gendered.push({alone:male===1||female===1,note:note('GENDER_BALANCE','warning',p.name+(weeks===2?', week '+(w+1):'')+': '+female+' Female and '+male+' Male students'+(unknown?' ('+unknown+' with unknown gender)':'')+'. '+(!cfg.balanceGender?'Gender balancing is turned off in Settings.':context&&context.afterSort?"We couldn't fix it without breaking another rule.":'Sort again to try to fix it.'),extra)});
       }
     });
+    // Groups with a single Male or a single Female student are listed first.
+    gendered.sort(function(a,b){return Number(b.alone)-Number(a.alone);}).forEach(function(g){out.push(g.note);});
     Object.keys(choices||{}).forEach(function(id){if((choiceFor(choices,id).mustRun||choiceFor(choices,id).run===true)&&!projectMap[id])out.push(note('REQUIRED_PROJECT_MISSING','error','A required project is not running.',{projectId:id}));});
     var summary=summarize(students,projects,assignments);if(projects.length!==cfg.projectCount)out.push(note('PROJECT_COUNT','warning','Running '+projects.length+' projects; requested '+cfg.projectCount+'.'));if(summary.minorProjectCount!==cfg.minorProjects)out.push(note('MINOR_PROJECT_COUNT','warning','Running '+summary.minorProjectCount+' Minor projects; requested '+cfg.minorProjects+'.'));if(summary.minorStudents<cfg.minorMin||summary.minorStudents>cfg.minorMax)out.push(note('MINOR_STUDENT_COUNT','warning','Placed '+summary.minorStudents+' Minor students; requested range '+cfg.minorMin+' to '+cfg.minorMax+'.'));
     if(!students.some(function(s){return eligible(s)&&genderOf(s.gender);}))out.push(note('NO_GENDER_DATA','warning','The app could not check gender balance because no gender data was supplied.'));

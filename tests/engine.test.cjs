@@ -474,3 +474,17 @@ test('a project a student checked comes before fit: seniors keep checked seats, 
   r=E.sort([s('senior',{grade:12,choices:['a','b']}),s('junior',{grade:11,choices:['a','b']})],[p('a'),p('b','Major',{goals:['9']})],cfg,{});
   assert.equal(at(r,'senior').project1,'a');
 });
+
+test('a gender swap never moves a student out of a project they checked into one they did not, and single-student groups are listed first',()=>{
+  // Each student checked only their own project and fits it at 4; the other project is unchecked at 5.
+  // The only swap that would fix a takes both swapped students out of a project they checked.
+  const projects=[p('a'),p('b','Major',{types:['heart'],goals:['7']})],cfg=config({minSize:4,targetSize:8,maxSize:8,balanceGender:true});
+  const students=[...Array.from({length:8},(_,i)=>s('a'+i,{types:['heart'],goals:['7'],gender:i<2?'Female':'Male'})),...Array.from({length:8},(_,i)=>s('b'+i,{choices:['b','z'],gender:i<5?'Female':'Male'}))];
+  const r=E.sort(students,projects,cfg,{});
+  assert.deepEqual(r.assignments,E.sort(students,projects,{...cfg,balanceGender:false},{}).assignments);
+  assert.deepEqual(genderMessages(r),["a: 2 Female and 6 Male students. We couldn't fix it without breaking another rule."]);
+  // A group with exactly one Male or one Female student comes before other broken groups.
+  const majors=[{...p('a'),finalLength:'Major'},{...p('b'),finalLength:'Major'}],group=(id,f,m)=>[...Array(f).fill('Female'),...Array(m).fill('Male')].map((g,i)=>s(id+i,{gender:g}));
+  const people=[...group('a',2,4),...group('b',5,1)],rows=people.map(x=>({studentId:x.id,status:'placed',project1:x.id[0],project2:null,fit1:1,fit2:null}));
+  assert.deepEqual(E.check(people,majors,rows,config({minSize:1,maxSize:8}),{}).filter(c=>c.code==='GENDER_BALANCE').map(c=>c.message.split(':')[0]),['b','a']);
+});
