@@ -565,3 +565,26 @@ test('Check again reports a "Not with" pair put together by hand and rebuilds PP
   assert.ok(checks.some(c => c.code === 'NOT_WITH_TOGETHER' && c.severity === 'error'));
   assert.deepEqual(f.sheets.get('PP Friend check').data[1].slice(3), ['Together', 'In the same group']);
 });
+
+test('Setup adds Max size to an older Project choices tab and keeps its values; a Max size reaches the sort and PP Summary', () => {
+  const f = fixture(true); f.adapter.practice();
+  const choices = f.sheets.get('Project choices').data;
+  assert.equal(choices[0][7], 'Max size');
+  // Make it look like a tab from before this round, with a decision in it.
+  choices.forEach(r => r.splice(7, 1)); choices[1][2] = true;
+  const before = JSON.stringify(choices);
+  f.adapter.setup();
+  assert.equal(choices[0][7], 'Max size');
+  assert.equal(JSON.stringify(choices.map(r => r.slice(0, 7))), before);
+  const plain = f.adapter.sort('No Max size');
+  const popular = plain.projects.filter(p => p.finalLength === 'Major').map(p => p.id)[0];
+  const sizeOf = r => r.assignments.filter(a => a.project1 === popular).length;
+  choices.find(r => r[0] === popular)[7] = 14;
+  const big = f.adapter.sort('Max size 14');
+  assert.ok(sizeOf(big) >= sizeOf(plain) && sizeOf(big) <= 14);
+  const summary = new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  assert.equal(summary.get('Group size: ' + big.projects.find(p => p.id === popular).name), sizeOf(big));
+  assert.match(String(summary.get('Group size: ' + big.projects.find(p => p.finalLength === 'Minor').name)), /^Week 1: \d+, week 2: \d+$/);
+  choices.find(r => r[0] === popular)[7] = 15;
+  assert.throws(() => f.adapter.sort('Too big'), /Max size must be a whole number from 1 to 14/);
+});

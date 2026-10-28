@@ -1061,6 +1061,7 @@ var PPEngine = (function () {
       if(c.mustRun!=null&&typeof c.mustRun!=='boolean')throw new Error('Must run must be TRUE or FALSE for '+id+'.');
       if(c.length!=null&&c.length!==''&&c.length!=='Major'&&c.length!=='Minor')throw new Error('Final length must be Major or Minor for '+id+'.');
       if(c.mustRun===true&&c.run===false)issues.push(note('CONTRADICTORY_PROJECT_CHOICE','error','Must-run project is also marked not to run: '+id,{projectId:id}));
+      if(c.maxSize!=null&&(!Number.isInteger(c.maxSize)||c.maxSize<cfg.minSize||c.maxSize>14))issues.push(note('INVALID_MAX_SIZE','error','Max size for '+id+' must be a whole number from '+cfg.minSize+' (the minimum group size) to 14.',{projectId:id}));
       arr(c.cannotRunWith).forEach(function(other){if(!ids[other]||other===id)issues.push(note('INVALID_PROJECT_CONFLICT','error','Invalid cannot-run-with entry for '+id+': '+other,{projectId:id}));});
     });
     var all=projects.filter(function(p){var c=choiceFor(choices,p.id);if(p.enabled===false&&mandatory(p,choices))issues.push(note('CANCELLED_PROJECT','error','A cancelled project was requested to run: '+p.name,{projectId:p.id}));return p.enabled!==false&&c.run!==false;}).map(function(p){
@@ -1139,7 +1140,8 @@ var PPEngine = (function () {
   function key(v){return String(v==null?'':v).toLowerCase().replace(/\s+/g,'');}
   function genderOf(v){v=plain(v);return v==='m'||v==='male'||v==='boy'?'Male':v==='f'||v==='female'||v==='girl'?'Female':null;}
   function plain(v){return String(v==null?'':v).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
-  function limit(p,cfg){return cfg.maxSize;}
+  // A project's largest group: its Max size from Project choices (never above 14), or maxSize.
+  function limit(p,cfg,choices){var c=choiceFor(choices,p.id).maxSize;return Number.isInteger(c)?Math.min(14,c):cfg.maxSize;}
   // Rows from Locked placements. A student is found by email or Student ID, or by name when the
   // email is blank. A project can be a name, an ID or a MAJ-/MIN- label from the grade tabs.
   function resolveLocks(students,projects,rows){
@@ -1180,14 +1182,14 @@ var PPEngine = (function () {
     return out;
   }
   function cohort(students,projects,cfg,issues,run){
-    var priority=priorityOrder(run),leading=run.leading,locked=run.locked,lockedIds=Object.keys(locked);
+    var priority=priorityOrder(run),leading=run.leading,locked=run.locked,lockedIds=Object.keys(locked),cap=function(list){return list.reduce(function(n,p){return n+limit(p,cfg,run.choices);},0);};
     var active=students.filter(function(s){return eligible(s)&&!locked[s.id];}),free=active.filter(function(s){return !leading[s.id];}),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
     minors.forEach(function(p){running[p.id]=true;});
     // Locked students count toward the Minor target, and the cohort fills in around them.
     var lockedMinor=lockedIds.filter(function(id){return locked[id].track==='Minor';}).length,placing=active.length+lockedIds.filter(function(id){return locked[id].track;}).length;
-    var lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,placing-majors*cfg.maxSize),upper=Math.min(cfg.minorMax,minors.length*cfg.maxSize,placing-majors*cfg.minSize);
+    var majorList=projects.filter(function(p){return p.finalLength!=='Minor';}),lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,placing-cap(majorList)),upper=Math.min(cfg.minorMax,cap(minors),placing-majors*cfg.minSize);
     if(lower>upper)issues.push(note('COHORT_CAPACITY','warning','The group sizes cannot fit the requested number of Minor students. Check the project list and Minor student targets.'));
-    var desired=Math.max(0,Math.min(minors.length*cfg.maxSize,lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget)),minimum=Math.min(desired,lower);
+    var desired=Math.max(0,Math.min(cap(minors),lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget)),minimum=Math.min(desired,lower);
     function minorChecks(s){return arr(s.choices).filter(function(id,i,all){return running[id]&&all.indexOf(id)===i;}).length;}
     // Every Minor-preference student does Minors. Not-sure students who checked the most running
     // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
@@ -1210,16 +1212,18 @@ var PPEngine = (function () {
   // sophomores' fit and the fit of students placed last, then keeping last run's placement. Each
   // level outweighs everything below it can add up to, so keeping a placement never costs anyone
   // fit or seniority. The tie order, through the order of the students, settles what is still equal.
-  function assignFlow(members,projects,cfg,choices,capacity,run){
+  function assignFlow(members,projects,cfg,choices,capacity,floor,run){
     var n=members.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[],total=0,levels=[0,0,0,0],most=1;
     function edge(u,v,cap,cost){var a={to:v,rev:graph[v].length,cap:cap,cost:cost,initial:cap},b={to:u,rev:graph[u].length,cap:0,cost:-cost,initial:0};graph[u].push(a);graph[v].push(b);return a;}
     function level(s){return run.last(s)?0:s.grade===12?3:s.grade===11?2:1;}
     function kept(s,p){var before=run.previous[s.id];return before&&before.project1!==p.id&&before.project2!==p.id?1:0;}
     members.forEach(function(mem){levels[level(mem.s)]++;total+=mem.units;most=Math.max(most,mem.units);});
     var base=5*most*Math.max.apply(null,levels)+1,stable=total+1;
-    if(6*stable*Math.pow(base,3)*V>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
+    // A seat that brings a group up to the minimum is worth more than any change in fit.
+    var bonus=6*Math.pow(base,3)*stable;
+    if(12*stable*Math.pow(base,3)*V>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
     members.forEach(function(mem,i){var s=mem.s,w=Math.pow(base,level(s));edge(0,1+i,mem.units,-6*w*stable);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,(f.tier-1)*w*stable+kept(s,p));links.push({student:s.id,project:p.id,edge:e});}});});
-    projects.forEach(function(p,j){edge(1+n+j,sink,capacity[p.id]||0,0);});
+    projects.forEach(function(p,j){var low=floor[p.id]||0;if(low)edge(1+n+j,sink,low,-bonus);edge(1+n+j,sink,(capacity[p.id]||0)-low,0);});
     var potential=Array(V).fill(Infinity);potential[0]=0;
     for(var k=0;k<V;k++){var changed=false;for(var u=0;u<V;u++){if(!isFinite(potential[u]))continue;graph[u].forEach(function(e){if(e.cap>0&&potential[e.to]>potential[u]+e.cost){potential[e.to]=potential[u]+e.cost;changed=true;}});}if(!changed)break;}
     potential=potential.map(function(x){return isFinite(x)?x:0;});
@@ -1284,13 +1288,16 @@ var PPEngine = (function () {
     var groups=cohort(students,projects,cfg,issues,run),leading=run.leading,locked=run.locked,byId={},majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';});
     projects.forEach(function(p){byId[p.id]=p;});
     // Locks and leaders fill their seats first, so the flow gets only the seats left over.
+    // A project with a Max size may grow up to it when more students want it and it fits them better.
+    // Other projects keep the even split, and then every group fills to the minimum first.
     function solve(members,list,units,fixed,total){
-      var quota=quotas(total,list,cfg,scores),assigned={},relaxed=false;
-      for(var attempt=0;attempt<=cfg.maxSize;attempt++){
-        var capacity={};list.forEach(function(p){capacity[p.id]=Math.max(0,quota[p.id]*units-(fixed[p.id]||0));});
-        assigned=assignFlow(members,list,cfg,choices,capacity,run);
+      var quota=quotas(total,list,cfg,scores),assigned={},relaxed=false,sized=list.some(function(p){return Number.isInteger(choiceFor(choices,p.id).maxSize);});
+      list.forEach(function(p){if(Number.isInteger(choiceFor(choices,p.id).maxSize))quota[p.id]=limit(p,cfg,choices);});
+      for(var attempt=0;attempt<=14;attempt++){
+        var capacity={},floor={};list.forEach(function(p){capacity[p.id]=Math.max(0,quota[p.id]*units-(fixed[p.id]||0));floor[p.id]=sized?Math.min(capacity[p.id],Math.max(0,cfg.minSize*units-(fixed[p.id]||0))):0;});
+        assigned=assignFlow(members,list,cfg,choices,capacity,floor,run);
         if(members.every(function(mem){return assigned[mem.s.id].length===mem.units;}))break;
-        var expandable=list.filter(function(p){return quota[p.id]<cfg.maxSize;});if(!expandable.length)break;
+        var expandable=list.filter(function(p){return quota[p.id]<limit(p,cfg,choices);});if(!expandable.length)break;
         expandable.forEach(function(p){quota[p.id]++;});relaxed=true;
       }
       if(relaxed)issues.push(note('QUOTA_RELAXED','info',(units===2?'Minor':'Major')+' groups could not all meet the balanced size targets because of project restrictions. They still stay within the maximum.'));
@@ -1381,7 +1388,7 @@ var PPEngine = (function () {
       if(stop)return stop;
       var met=keepMet?involving(ids,'With').filter(function(q){return together(q.from,q.to);}):[],apartBefore=involving(ids,'Not with').filter(function(q){return !together(q.from,q.to);});
       changes.forEach(function(c){var w=track[c.id]==='Major'?0:c.w,old=group(c.id,w),now;undo.push({id:c.id,w:w,from:where[c.id][w]});if(!(old in before))before[old]=size[old];size[old]--;where[c.id][w]=c.to;now=group(c.id,w);if(!(now in before))before[now]=size[now]||0;size[now]=(size[now]||0)+1;});
-      Object.keys(before).some(function(g){var n=size[g]||0,p=project[g.split('|')[0]];if(n>before[g]&&n>limit(p,cfg))stop='A group would go over the maximum';else if(n<before[g]&&n<cfg.minSize)stop='A group would go under the minimum';return !!stop;});
+      Object.keys(before).some(function(g){var n=size[g]||0,p=project[g.split('|')[0]];if(n>before[g]&&n>limit(p,cfg,choices))stop='A group would go over the maximum';else if(n<before[g]&&n<cfg.minSize)stop='A group would go under the minimum';return !!stop;});
       if(!stop&&apartBefore.some(function(q){return together(q.from,q.to);}))stop='Would put a student with a classmate they asked not to work with';
       if(!stop&&met.some(function(q){return !together(q.from,q.to);}))stop='Would split up another friend request';
       if(stop||dry)undo.reverse().forEach(function(u){var g=group(u.id,u.w);size[g]--;where[u.id][u.w]=u.from;g=group(u.id,u.w);size[g]=(size[g]||0)+1;});
@@ -1502,7 +1509,7 @@ var PPEngine = (function () {
       else if(first.finalLength==='Major'&&p1&&p2)out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has two different Majors, "+p1.name+' and '+p2.name+'.',extra));
       else if(first.finalLength==='Minor'&&!(p1&&p2))out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has a Minor in only one week. A Minor student needs two different Minors.",extra));
       else if(first.finalLength==='Minor'&&p1.id===p2.id)out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has "+p1.name+' in both weeks. A Minor student needs two different Minors.',extra));
-      [p1,p2].forEach(function(p,w){if(!p)return;var week=p.finalLength==='Major'?0:w,size=sizes[p.id][week],cap=limit(p,cfg);if(size>cap)out.push(note('LOCK_BREAKS_RULE','error',who+' is locked into '+p.name+(p.finalLength==='Minor'?', week '+(w+1):'')+', which has '+size+' students, over the maximum of '+cap+'.',{studentId:st.id,projectId:p.id}));});
+      [p1,p2].forEach(function(p,w){if(!p)return;var week=p.finalLength==='Major'?0:w,size=sizes[p.id][week],cap=limit(p,cfg,run.choices);if(size>cap)out.push(note('LOCK_BREAKS_RULE','error',who+' is locked into '+p.name+(p.finalLength==='Minor'?', week '+(w+1):'')+', which has '+size+' students, over the maximum of '+cap+'.',{studentId:st.id,projectId:p.id}));});
       arr(requests).forEach(function(q){var other=q.from===a.studentId?q.to:q.to===a.studentId?q.from:null,b=assignments.filter(function(x){return x.studentId===other;})[0];if(q.kind==='Not with'&&other&&shareGroup(a,b))out.push(note('LOCK_BREAKS_RULE','error',who+' is locked into a group with a classmate in a "Not with" request.',extra));});
     });
     return out;
@@ -1513,7 +1520,7 @@ var PPEngine = (function () {
   function sort(students,projects,input,choices,context){
     context=context||{};
     var cfg=settings(input),seen={};students.forEach(function(s){if(!s.id||seen[s.id])throw new Error('Each student needs their own ID.');seen[s.id]=true;if(![10,11,12].includes(s.grade))throw new Error('Every student must have grade 10, 11, or 12.');});
-    var plan=propose(students,projects,cfg,choices),selected=plan.projects,issues=plan.issues.slice(),scores={},run={tie:tieOrder(students,cfg),allProjects:projects,byId:{},names:{},previous:{}};interest(students,projects).forEach(function(r){scores[r.projectId]=r.checked*3+r.aligned;});
+    var plan=propose(students,projects,cfg,choices),selected=plan.projects,issues=plan.issues.slice(),scores={},run={tie:tieOrder(students,cfg),allProjects:projects,byId:{},names:{},previous:{},choices:choices};interest(students,projects).forEach(function(r){scores[r.projectId]=r.checked*3+r.aligned;});
     students.forEach(function(s){run.byId[s.id]=s;});projects.forEach(function(p){run.names[p.id]=p.name;});
     arr(context.previous).forEach(function(a){if(a&&run.byId[a.studentId])run.previous[a.studentId]={project1:a.project1||null,project2:a.project2||null};});
     var blocked=issues.some(function(x){return x.severity==='error';}),lockInfo=resolveLocks(students,projects,context.locks),lockProjects={},friends=resolveFriends(students,context.friends,cfg),arranged=null;
@@ -1552,7 +1559,9 @@ var PPEngine = (function () {
       var checked=[a.project1,a.project2].filter(function(id){return id&&arr(st.choices).indexOf(id)>=0;}).length;
       if(a.project2){if(checked===2)g.minor.bothChecked++;else if(checked===1)g.minor.oneChecked++;else g.minor.noneChecked++;}else if(checked)g.major.checked++;else g.major.notChecked++;
       [a.fit1,a.fit2].forEach(function(t){if(t!=null){s.fitCounts[t]=(s.fitCounts[t]||0)+1;g.fits[t]=(g.fits[t]||0)+1;totals[st.grade][0]+=t;totals[st.grade][1]++;}});});
-    Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});return s;
+    Object.keys(totals).forEach(function(g){if(totals[g][1])s.byGrade[g].meanFit=totals[g][0]/totals[g][1];});
+    var sizes=counts(projects,assignments);s.groups=projects.map(function(p){return {id:p.id,name:p.name,length:p.finalLength,sizes:p.finalLength==='Minor'?sizes[p.id]:[sizes[p.id][0]]};});
+    return s;
   }
   function check(students,projects,assignments,input,choices,context){
     var cfg=settings(input),out=[],studentMap={},projectMap={},seen={},members={},validStatuses=['placed','excluded','review'];
@@ -1572,7 +1581,7 @@ var PPEngine = (function () {
     });
     students.forEach(function(s){if(!seen[s.id])out.push(note('MISSING_STUDENT','error','Student has no assignment or review row.',{studentId:s.id}));else if(seen[s.id]!==1)out.push(note('DUPLICATE_ASSIGNMENT','error','Student has more than one assignment row.',{studentId:s.id}));if(s.previousKnown===false&&eligible(s))out.push(note('PREVIOUS_UNAVAILABLE','warning','Past projects are missing for this student, so the app could not fully check for repeats.',{studentId:s.id}));});
     projects.forEach(function(p){var c=choiceFor(choices,p.id);if(c.run===false)out.push(note('PROJECT_DISABLED','error','Project is selected despite Run = FALSE.',{projectId:p.id}));if(c.length&&p.finalLength!==c.length)out.push(note('LENGTH_CHOICE_IGNORED','error','Selected length differs from the project choice.',{projectId:p.id}));projects.forEach(function(q){if(compare(p.id,q.id)<0&&conflicts(p.id,q.id,choices))out.push(note('PROJECT_CONFLICT','error','Projects cannot run together: '+p.name+' and '+q.name,{projectId:p.id}));});
-      var weeks=p.finalLength==='Minor'?2:1;for(var w=0;w<weeks;w++){var list=members[p.id][w],extra={projectId:p.id,week:w+1};if(list.length>cfg.maxSize)out.push(note('OVER_CAPACITY','error',p.name+' exceeds '+cfg.maxSize+' students in week '+(w+1)+'.',extra));if(list.length<cfg.minSize)out.push(note('UNDER_MINIMUM',c.mustRun===true?'warning':'error',p.name+' has '+list.length+' students in week '+(w+1)+'; minimum is '+cfg.minSize+(c.mustRun===true?' (must-run exception).':'.'),extra));
+      var weeks=p.finalLength==='Minor'?2:1;for(var w=0;w<weeks;w++){var list=members[p.id][w],extra={projectId:p.id,week:w+1},cap=limit(p,cfg,choices);if(list.length>cap)out.push(note('OVER_CAPACITY','error',p.name+' exceeds '+cap+' students in week '+(w+1)+'.',extra));if(list.length<cfg.minSize)out.push(note('UNDER_MINIMUM',c.mustRun===true?'warning':'error',p.name+' has '+list.length+' students in week '+(w+1)+'; minimum is '+cfg.minSize+(c.mustRun===true?' (must-run exception).':'.'),extra));
         // The gender rule: a group has no Male students or at least three, and no Female students or at
         // least three. Unknown genders aren't counted, and the message says how many there are.
         var male=0,female=0,unknown=0;list.forEach(function(s){var g=genderOf(s.gender);if(g==='Male')male++;else if(g==='Female')female++;else unknown++;});
@@ -1617,6 +1626,7 @@ var PPAdapter = (function () {
   var FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
   var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
   var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
+  var CHOICE_HEADERS = ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with", 'Max size'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
   function text(v) { return v == null ? '' : String(v).trim(); }
   function safeCell(v) {
@@ -1674,10 +1684,13 @@ var PPAdapter = (function () {
     var header = values(name, true)[0].map(text);
     sheet(name, true).appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
   }
-  function records(name, headers, required) {
+  // optional lists columns that may be missing; each one present is read like the others.
+  function records(name, headers, required, optional) {
     var data = values(name, required);
     if (!data.length) return [];
-    var found = data[0].map(text), indices = headers.map(function (h) {
+    var found = data[0].map(text);
+    headers = headers.concat((optional || []).filter(function (h) { return found.indexOf(h) >= 0; }));
+    var indices = headers.map(function (h) {
       var matches = found.reduce(function (a, x, i) { if (x === h) a.push(i); return a; }, []);
       if (matches.length !== 1) throw new Error('Tab "' + name + '" needs exactly one "' + h + '" column.');
       return matches[0];
@@ -1723,7 +1736,8 @@ var PPAdapter = (function () {
     var have = records('Settings', ['Setting'], true).map(function (r) { return text(r.Setting); });
     Object.keys(PPEngine.defaults).forEach(function (k) { if (have.indexOf(k) < 0) appendRecord('Settings', { Setting: k, Value: PPEngine.defaults[k], Notes: SETTING_NOTES[k] || '' }); });
     var projects = nonempty(sheet('Projects')) ? readProjects().projects : PPCatalog;
-    seed('Project choices', ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with"], projects.map(function (p) { return [p.id, p.name, '', '', false, '', '']; }));
+    seed('Project choices', CHOICE_HEADERS, projects.map(function (p) { return [p.id, p.name, '', '', false, '', '', '']; }));
+    addColumns('Project choices', CHOICE_HEADERS);
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
     seed('Locked placements', LOCK_HEADERS, []);
@@ -1769,14 +1783,16 @@ var PPAdapter = (function () {
       people[s.id.toLowerCase()] = (people[s.id.toLowerCase()] || []).concat(s.id);
       if (s.email) people[s.email.toLowerCase()] = (people[s.email.toLowerCase()] || []).concat(s.id);
     });
-    records('Project choices', ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with"], true).forEach(function (r) {
+    records('Project choices', CHOICE_HEADERS.slice(0, 7), true, ['Max size']).forEach(function (r) {
       var id = text(r['Project ID']), p = byId[id];
       if (!p) throw new Error('Unknown Project ID in Project choices: ' + id);
       if (result[id]) throw new Error('Duplicate Project ID in Project choices: ' + id);
       var length = text(r['Final length']);
       if (length && ['Major', 'Minor'].indexOf(length) === -1) throw new Error(p.name + ': Final length must be Major, Minor or blank.');
       if (length && p.length !== 'Either' && length !== p.length) throw new Error(p.name + ' is listed as ' + p.length + '. Update the approved source metadata before changing its length.');
-      var choice = { run: boolean(r.Run, p.name + ' Run', null), length: length || null, mustRun: boolean(r['Must run'], p.name + ' Must run', false), leaders: [], cannotRunWith: [] };
+      var size = text(r['Max size']);
+      if (size && (!Number.isInteger(Number(size)) || Number(size) < 1 || Number(size) > 14)) throw new Error(p.name + ': Max size must be a whole number from 1 to 14, or blank.');
+      var choice = { run: boolean(r.Run, p.name + ' Run', null), length: length || null, mustRun: boolean(r['Must run'], p.name + ' Must run', false), leaders: [], cannotRunWith: [], maxSize: size ? Number(size) : null };
       if (choice.mustRun && choice.run === false) throw new Error(p.name + ': Must run conflicts with Run FALSE.');
       choice.leaders = split(r.Leaders).map(function (token) {
         var found = people[token.toLowerCase()] || [], unique = found.filter(function (x, i) { return found.indexOf(x) === i; });
@@ -1876,6 +1892,7 @@ var PPAdapter = (function () {
       Object.keys(g.fits || {}).forEach(function (tier) { rows.push([who + ' placements at fit ' + tier, g.fits[tier]]); });
       rows.push([who + ' average fit', g.meanFit == null ? 'Not available' : Math.round(g.meanFit * 100) / 100]);
     });
+    (summary.groups || []).forEach(function (g) { rows.push(['Group size: ' + g.name, g.length === 'Minor' ? 'Week 1: ' + g.sizes[0] + ', week 2: ' + g.sizes[1] : g.sizes[0]]); });
     var f = summary.friends;
     if (f) rows.push(['Friend requests', f.used ? 'Used' : 'Turned off in Settings'], ['"With" requests met', f.withMet], ['"With" requests not met', f.withUnmet], ['Students with a "With" request who are with a classmate they named', f.studentsMet + ' of ' + f.studentsWith], ['"Not with" requests broken', f.notWithBroken]);
     return rows;

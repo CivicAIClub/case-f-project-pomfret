@@ -441,3 +441,22 @@ test('Project choices still override the suggested lengths and runs',()=>{
   const plan=lengths(E.propose(students,projects,{...E.defaults,projectCount:3,minorProjects:2},{e1:{length:'Major'},j1:{run:false}}));
   assert.deepEqual(plan,{e1:'Major',e2:'Minor',m1:'Minor'});
 });
+
+// Thirty Major students: twenty want a, five want b and five want c. The even split is ten each.
+const sizeRun=()=>({projects:[p('a'),p('b','Major',{goals:['9']}),p('c','Major',{goals:['8']})],cfg:config({minSize:8,targetSize:10,maxSize:10,projectCount:3}),
+  students:[...Array.from({length:20},(_,i)=>s('a'+i,{choices:['a','z']})),...Array.from({length:5},(_,i)=>s('b'+i,{choices:['b','z'],goals:['9']})),...Array.from({length:5},(_,i)=>s('c'+i,{choices:['c','z'],goals:['8']}))]});
+const groupSize=(r,id)=>r.assignments.filter(a=>a.project1===id).length;
+test('a Major with a Max size takes more than the even split when students want it, and the other groups stay at the minimum',()=>{
+  const {projects,cfg,students}=sizeRun(),even=E.sort(students,projects,cfg,{});
+  assert.deepEqual(['a','b','c'].map(id=>groupSize(even,id)),[10,10,10]);
+  const big=E.sort(students,projects,cfg,{a:{maxSize:14}});
+  assert.deepEqual(['a','b','c'].map(id=>groupSize(big,id)),[14,8,8]);
+  assert.deepEqual(big.checks.filter(c=>['OVER_CAPACITY','UNDER_MINIMUM'].includes(c.code)),[]);
+  assert.deepEqual(big.summary.groups.map(g=>[g.id,g.sizes]),[['a',[14]],['b',[8]],['c',[8]]]);
+  // A Max size below the minimum group size is an error.
+  assert.ok(E.sort(students,projects,cfg,{a:{maxSize:5}}).issues.some(i=>i.code==='INVALID_MAX_SIZE'&&i.severity==='error'));
+});
+test('with Max size blank everywhere the groups match a run without it',()=>{
+  const {projects,cfg,students}=sizeRun();
+  assert.deepEqual(E.sort(students,projects,cfg,{a:{maxSize:null},b:{maxSize:null},c:{maxSize:null}}).assignments,E.sort(students,projects,cfg,{}).assignments);
+});

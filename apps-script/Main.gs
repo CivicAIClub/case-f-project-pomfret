@@ -23,6 +23,7 @@ var PPAdapter = (function () {
   var FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
   var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
   var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
+  var CHOICE_HEADERS = ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with", 'Max size'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
   function text(v) { return v == null ? '' : String(v).trim(); }
   function safeCell(v) {
@@ -80,10 +81,13 @@ var PPAdapter = (function () {
     var header = values(name, true)[0].map(text);
     sheet(name, true).appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
   }
-  function records(name, headers, required) {
+  // optional lists columns that may be missing; each one present is read like the others.
+  function records(name, headers, required, optional) {
     var data = values(name, required);
     if (!data.length) return [];
-    var found = data[0].map(text), indices = headers.map(function (h) {
+    var found = data[0].map(text);
+    headers = headers.concat((optional || []).filter(function (h) { return found.indexOf(h) >= 0; }));
+    var indices = headers.map(function (h) {
       var matches = found.reduce(function (a, x, i) { if (x === h) a.push(i); return a; }, []);
       if (matches.length !== 1) throw new Error('Tab "' + name + '" needs exactly one "' + h + '" column.');
       return matches[0];
@@ -129,7 +133,8 @@ var PPAdapter = (function () {
     var have = records('Settings', ['Setting'], true).map(function (r) { return text(r.Setting); });
     Object.keys(PPEngine.defaults).forEach(function (k) { if (have.indexOf(k) < 0) appendRecord('Settings', { Setting: k, Value: PPEngine.defaults[k], Notes: SETTING_NOTES[k] || '' }); });
     var projects = nonempty(sheet('Projects')) ? readProjects().projects : PPCatalog;
-    seed('Project choices', ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with"], projects.map(function (p) { return [p.id, p.name, '', '', false, '', '']; }));
+    seed('Project choices', CHOICE_HEADERS, projects.map(function (p) { return [p.id, p.name, '', '', false, '', '', '']; }));
+    addColumns('Project choices', CHOICE_HEADERS);
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
     seed('Locked placements', LOCK_HEADERS, []);
@@ -175,14 +180,16 @@ var PPAdapter = (function () {
       people[s.id.toLowerCase()] = (people[s.id.toLowerCase()] || []).concat(s.id);
       if (s.email) people[s.email.toLowerCase()] = (people[s.email.toLowerCase()] || []).concat(s.id);
     });
-    records('Project choices', ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with"], true).forEach(function (r) {
+    records('Project choices', CHOICE_HEADERS.slice(0, 7), true, ['Max size']).forEach(function (r) {
       var id = text(r['Project ID']), p = byId[id];
       if (!p) throw new Error('Unknown Project ID in Project choices: ' + id);
       if (result[id]) throw new Error('Duplicate Project ID in Project choices: ' + id);
       var length = text(r['Final length']);
       if (length && ['Major', 'Minor'].indexOf(length) === -1) throw new Error(p.name + ': Final length must be Major, Minor or blank.');
       if (length && p.length !== 'Either' && length !== p.length) throw new Error(p.name + ' is listed as ' + p.length + '. Update the approved source metadata before changing its length.');
-      var choice = { run: boolean(r.Run, p.name + ' Run', null), length: length || null, mustRun: boolean(r['Must run'], p.name + ' Must run', false), leaders: [], cannotRunWith: [] };
+      var size = text(r['Max size']);
+      if (size && (!Number.isInteger(Number(size)) || Number(size) < 1 || Number(size) > 14)) throw new Error(p.name + ': Max size must be a whole number from 1 to 14, or blank.');
+      var choice = { run: boolean(r.Run, p.name + ' Run', null), length: length || null, mustRun: boolean(r['Must run'], p.name + ' Must run', false), leaders: [], cannotRunWith: [], maxSize: size ? Number(size) : null };
       if (choice.mustRun && choice.run === false) throw new Error(p.name + ': Must run conflicts with Run FALSE.');
       choice.leaders = split(r.Leaders).map(function (token) {
         var found = people[token.toLowerCase()] || [], unique = found.filter(function (x, i) { return found.indexOf(x) === i; });
@@ -282,6 +289,7 @@ var PPAdapter = (function () {
       Object.keys(g.fits || {}).forEach(function (tier) { rows.push([who + ' placements at fit ' + tier, g.fits[tier]]); });
       rows.push([who + ' average fit', g.meanFit == null ? 'Not available' : Math.round(g.meanFit * 100) / 100]);
     });
+    (summary.groups || []).forEach(function (g) { rows.push(['Group size: ' + g.name, g.length === 'Minor' ? 'Week 1: ' + g.sizes[0] + ', week 2: ' + g.sizes[1] : g.sizes[0]]); });
     var f = summary.friends;
     if (f) rows.push(['Friend requests', f.used ? 'Used' : 'Turned off in Settings'], ['"With" requests met', f.withMet], ['"With" requests not met', f.withUnmet], ['Students with a "With" request who are with a classmate they named', f.studentsMet + ' of ' + f.studentsWith], ['"Not with" requests broken', f.notWithBroken]);
     return rows;
