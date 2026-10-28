@@ -44,6 +44,18 @@ After round 2's fixes, the way Not-sure students are chosen for Minors changed (
 | `followChecksOverTrack` on practice data | No practice student's answer disagrees with their checks, so PP Summary shows 0 and the setting changes nothing there. |
 | `npm run bundle` | The bundle's first line is still `/** @OnlyCurrentDoc */`. |
 
+## Max size and the gender pass, October 28, 2026
+
+A Major's seats above its even split now go only to students who checked it, and the gender pass counts one student of a gender as worse than two and can move a single student (see [SOURCE-AUDIT.md](SOURCE-AUDIT.md)).
+
+| Check | Observed result |
+| --- | --- |
+| Full local suite, Node 24.12.0 | 168 tests passed; no failures or skipped tests. The new Max size tests for checked-only seats and for the retry fail on the code from before the change, and the retry test also fails when the retry doesn't open those seats. All four new gender tests fail on the code from before. The 12-student test fails without the 12 cap, and the three-to-two test fails when a change that keeps the total the same is allowed. |
+| Placements in existing tests | Every engine `sort` call the suite makes (206 on the old code) was recorded on the code from before both changes and after them. All 152 different inputs with no Max size and `balanceGender` off gave the same placements. Of 17 inputs with a Max size or `balanceGender` on, 5 changed, and all 5 come from the new tests. |
+| `npm run demo` | Unchanged: 240 students placed, 144 Major, 96 Minor. PP Check: no errors, 66 warnings, 2 informational findings. The practice data has no gender data and no Max size. |
+| Max size on practice data | With a Max size of 14 on the most checked Major, the group stays at its even split of 10, before and after. Most students who checked it are Not sure and do Minors, so no Major student is turned away from the extra seats. |
+| Gender on practice data | With invented genders (half Female) and `balanceGender` TRUE, both versions end with no gender warnings. The old pass made 7 swaps; the new one makes 4 swaps and 3 moves, and sophomores' average fit goes from 4.71 to 4.64. With a quarter Female, both end with one group of two Female students that can't be fixed. |
+
 The spreadsheet simulator implements the API methods used by the adapter, including data validation and cell writes; it is not Google Sheets. School-account authorization, actual Apps Script execution, real-source reconciliation, independent teammate review and Mr. Litowitz's approval remain outstanding. [SOURCE-AUDIT.md](SOURCE-AUDIT.md) lists the remaining gaps.
 
 CI runs the tests, demo and build on Node 22 with Python 3.12, and fails if rebuilding changes committed Apps Script output. CI results must be read on the PR; defining the workflow is not evidence that a hosted run passed.
