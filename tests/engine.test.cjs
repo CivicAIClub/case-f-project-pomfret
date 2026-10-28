@@ -121,9 +121,14 @@ test('explain gives the fit, reason and flags the sort wrote, and a move by hand
   // asked for Minors but checked only a Major.
   const answerFlag=f=>/^Said (Major|Minor) but /.test(f);
   assert.deepEqual(r.assignments.find(a=>a.studentId==='minor').flags.filter(answerFlag),['Said Minor but checked fewer than two running Minors.']);
+  // The sort also says why a student is in a project they didn't check. The students in Minors
+  // checked only the Major a, so each week says so.
+  const missed='Their other picks run as Majors.';
   for(const a of r.assignments){
     const e=E.explain(students.find(x=>x.id===a.studentId),[a.project1,a.project2].filter(Boolean),r.projects,cfg,{},false);
-    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason,flags:a.flags.filter(f=>!answerFlag(f))});
+    assert.equal(a.reason.split(missed).length-1,a.project2?2:0,a.studentId);
+    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason.split(' '+missed).join(''),flags:a.flags.filter(f=>!answerFlag(f))});
+    if(a.project2)assert.equal(a.reason,E.explain(students.find(x=>x.id===a.studentId),[a.project1,a.project2],r.projects,cfg,{},false,false,[missed,missed]).reason);
   }
   const soph=r.assignments.find(a=>a.studentId==='soph');
   assert.ok(soph.flags.some(x=>/asked for a Major/.test(x)));
@@ -863,4 +868,46 @@ test('with checkedBeforeInferred FALSE, a swap that would move a third student o
   assert.deepEqual(['ann','u','bea','t'].map(id=>at(r,id).project1),['a','a','b','b']);
   assert.ok(!at(r,'t').reason.includes('Swapped into this group'));
   assert.deepEqual(r.friends.map(x=>x.result),['Not together']);
+});
+
+// Why a student is in a project they didn't check: the end of the reason says so.
+const missedRun=()=>({projects:[p('a','Major',{name:'Alpha'}),p('b','Major',{name:'Beta',types:['feet'],goals:['9']}),p('x','Major',{name:'Project X'}),p('y','Major',{name:'Project Y'})],cfg:config({maxSize:3,projectCount:2})});
+const reasonOf=(r,id)=>r.assignments.find(a=>a.studentId===id).reason;
+test('a student whose only pick isn\'t running is told so',()=>{
+  const {projects,cfg}=missedRun(),off={x:{run:false},y:{run:false}};
+  const r=E.sort([s('solo',{choices:['x']}),s('pair',{choices:['x','y']}),s('fan',{choices:['a','b']})],projects,cfg,off);
+  assert.match(reasonOf(r,'solo'),/^Did not check this project;.*\. None of their picks are running: Project X\.$/);
+  assert.match(reasonOf(r,'pair'),/ None of their picks are running: Project X, Project Y\.$/);
+  assert.doesNotMatch(reasonOf(r,'fan'),/running|full|last year/);
+});
+test('a student whose pick was last year\'s project is told so',()=>{
+  // Alpha, Beta and Project X run, and a student who checked each of Alpha and Beta keeps it running.
+  const {projects}=missedRun(),cfg=config({maxSize:3,projectCount:3});
+  const r=E.sort([s('repeat',{choices:['a','z'],previous:['a']}),s('twice',{choices:['a','b'],previous:['a','b'],types:['feet']}),s('fanA'),s('fanB',{choices:['b','z'],types:['feet'],goals:['9']})],projects,cfg,{y:{run:false}});
+  assert.deepEqual(r.projects.map(x=>x.id).sort(),['a','b','x']);
+  assert.notEqual(r.assignments.find(a=>a.studentId==='repeat').project1,'a');
+  assert.match(reasonOf(r,'repeat'),/ Alpha was their project last year\.$/);
+  assert.match(reasonOf(r,'twice'),/ Alpha and Beta were their projects last year\.$/);
+});
+test('a student whose picks were full is told so, and so is one who checked nothing',()=>{
+  // One seat in each project, and both checked Alpha: the senior gets it.
+  const {projects}=missedRun(),cfg=config({maxSize:1,targetSize:1,projectCount:2});
+  const r=E.sort([s('senior',{grade:12}),s('soph',{grade:10})],projects,cfg,{x:{run:false},y:{run:false}});
+  assert.equal(r.assignments.find(a=>a.studentId==='senior').project1,'a');
+  assert.match(reasonOf(r,'soph'),/^Did not check this project;.*\. Their other picks were full\.$/);
+  assert.doesNotMatch(reasonOf(r,'senior'),/full/);
+  const none=E.sort([s('none',{choices:[]}),s('fan')],projects,config({maxSize:3,projectCount:2}),{x:{run:false},y:{run:false}});
+  assert.match(reasonOf(none,'none'),/ They checked no projects\.$/);
+});
+test('for a Minor student the sentence goes with the week of the project they didn\'t check',()=>{
+  // Three Minors with two places each: two students do Minor 3, which nobody checked, in one week.
+  const projects=[p('m1','Minor'),p('m2','Minor'),p('m3','Minor',{types:['feet'],goals:['9']})],cfg=config({projectCount:3,minorProjects:3,minorMin:3,minorTarget:3,minorMax:3,maxSize:2,targetSize:2});
+  const r=E.sort(['x','y','z'].map(id=>s(id,{preference:'Minor',choices:['m1','m2']})),projects,cfg,{});
+  const inM3=r.assignments.filter(a=>a.project1==='m3'||a.project2==='m3');
+  assert.equal(inM3.length,2);
+  for(const a of inM3){
+    const [one,two]=a.reason.split(' Week 2: '),missed=a.project1==='m3'?one:two,kept=a.project1==='m3'?two:one;
+    assert.match(missed,/^(Week 1: )?Did not check this project;.*\. Their other picks were full\.$/);
+    assert.doesNotMatch(kept,/full|running|last year/);
+  }
 });

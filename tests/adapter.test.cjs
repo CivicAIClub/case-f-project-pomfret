@@ -780,3 +780,20 @@ test('each project tab is laid out like last year\'s roster: label, faculty, loc
   // Grades go seniors, juniors, then sophomores within each block.
   for (const g of [one, two]) assert.ok(order(g).every((r, i, all) => !i || all[i - 1][1] >= r[1]));
 });
+
+test('the sentence saying why a student didn\'t get a pick shows in PP Master list, the project tabs, PP Needs you and PP Seniors to check', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.setup();
+  // The first senior checked only Glass Fusing, and it doesn't run.
+  const senior = f.sheets.get('Senior').data, name = senior[1][2];
+  senior[1][7] = 'Glass Fusing'; f.sheets.get('Project choices').data.find(r => r[0] === 'glass-fusing')[2] = false;
+  f.adapter.sort('Missed picks');
+  const run = saved(f), id = senior[1][1], a = run.assignments.get(id), reason = a.reason;
+  assert.equal(a.status, 'placed'); assert.match(reason, / None of their picks are running: Glass Fusing\.$/);
+  const registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const rowFor = (tab, column) => f.sheets.get(tab).data.find(r => r[column] === name);
+  assert.equal(rowFor('PP Master list', 0)[5], reason);
+  assert.equal(rowFor(registry.get(a.project1), 0)[3], reason);
+  assert.equal(rowFor('PP Needs you', 1)[4], reason);
+  assert.equal(rowFor('PP Seniors to check', 0)[4], reason);
+  assert.equal(f.sheets.get('PP Senior').data.find(r => r[0] === id)[7], reason);
+});

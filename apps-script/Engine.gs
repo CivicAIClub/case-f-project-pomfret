@@ -300,13 +300,15 @@ var PPEngine = (function () {
   // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
   // when a student is moved by hand. byHand drops the note about the Minor student minimum, which
   // doesn't apply to a student placed on purpose (by hand, by a lock or as a leader). locked also
-  // drops the Fit 6 flag, because a person chose those projects (by hand or with a lock).
+  // drops the Fit 6 flag, because a person chose those projects (by hand or with a lock). after[i],
+  // when given, ends the reason for project i (for a Minor, that week's part).
   var minimumFlag='This student asked for a Major but received Minors to reach the Minor student minimum.';
-  function explain(s,ids,projects,input,choices,byHand,locked){
+  function explain(s,ids,projects,input,choices,byHand,locked,after){
     var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
     var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
     if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push(minimumFlag);if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(!locked&&fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
-    return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
+    var parts=fits.map(function(f,i){return f.reason+(after&&after[i]?' '+after[i]:'');});
+    return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:parts.length>1?'Week 1: '+parts[0]+' Week 2: '+parts[1]:parts.length?parts[0]:'',flags:flags};
   }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
   // A locked student goes exactly where their row says, even on the other track or in a project
@@ -361,9 +363,34 @@ var PPEngine = (function () {
       return eligible(s)&&pair&&pair.length===(minorIds[s.id]?2:1)?describe(s,pair,projects,cfg,choices,run):emptyAssignment(s);
     });
   }
-  // The fit, reason and flags the sort writes for a student placed in these projects.
-  function describe(s,pair,projects,cfg,choices,run){
-    var a=emptyAssignment(s),lead=run.leading[s.id],placement=explain(s,pair,projects,cfg,choices,!!lead);
+  // Why a student is in a project they didn't check, for each project in pair (a Minor's two weeks),
+  // using only the parts that apply: checked projects that aren't running, ones they did last year,
+  // and others that were full. A project they lead, or one in skip, gets nothing.
+  function missedPicks(s,pair,projects,choices,run,skip){
+    var running={},lead=run.leading[s.id],track=pair.length===2?'Minor':'Major';
+    var picks=arr(s.choices).filter(function(id,i,all){return all.indexOf(id)===i&&run.names[id]!==undefined;});
+    projects.forEach(function(p){running[p.id]=p;});
+    function names(ids){return ids.map(function(id){return run.names[id];});}
+    function and(list){return list.length<3?list.join(' and '):list.slice(0,-1).join(', ')+' and '+list[list.length-1];}
+    return pair.map(function(pid,k){
+      if(picks.indexOf(pid)>=0||(lead&&lead.id===pid)||(skip&&skip[k]))return '';
+      if(!picks.length)return 'They checked no projects.';
+      var other=pair.length===2?pair[1-k]:null,parts=[];
+      var gone=picks.filter(function(id){return !running[id];}),repeat=picks.filter(function(id){return running[id]&&!allowed(s,running[id],choices);});
+      var open=picks.filter(function(id){return running[id]&&allowed(s,running[id],choices)&&id!==other;});
+      if(gone.length)parts.push('None of their picks are running: '+names(gone).join(', ')+'.');
+      if(repeat.length)parts.push(and(names(repeat))+(repeat.length===1?' was their project last year.':' were their projects last year.'));
+      // A pick on the other track was never open to them, so it wasn't full.
+      if(open.some(function(id){return running[id].finalLength===track;}))parts.push('Their other picks were full.');
+      else if(open.length)parts.push('Their other picks run as '+(track==='Major'?'Minors.':'Majors.'));
+      else if(other&&picks.indexOf(other)>=0)parts.push('Their other pick is their week '+(2-k)+' project.');
+      return parts.join(' ');
+    });
+  }
+  // The fit, reason and flags the sort writes for a student placed in these projects. skip[i] leaves
+  // out why project i wasn't one they checked, for a student a friend request moved there.
+  function describe(s,pair,projects,cfg,choices,run,skip){
+    var a=emptyAssignment(s),lead=run.leading[s.id],placement=explain(s,pair,projects,cfg,choices,!!lead,false,missedPicks(s,pair,projects,choices,run,skip));
     a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;a.fit1=placement.fit1;a.fit2=placement.fit2;a.reason=placement.reason;a.flags=placement.flags;
     if(lead)a.flags.unshift('Leading '+lead.name+', so placed there.');else if(checkedCount(s)<=1)a.flags.push(checkedCount(s)?'Checked only one project, so placed after everyone else.':'Checked no projects, so placed after everyone else.');
     return a;
@@ -399,7 +426,7 @@ var PPEngine = (function () {
   // with a classmate, wherever every rule still holds. Locked students and leaders never move. With
   // move false it only reports where each request stands, for Check again.
   function arrange(students,projects,assignments,cfg,choices,run,requests,move){
-    var byId={},project={},where={},track={},size={},fixed={},notes={},why={},joined=[],apart=[],stuck={};
+    var byId={},project={},where={},track={},size={},fixed={},notes={},why={},joined=[],apart=[],stuck={},pulled={};
     students.forEach(function(s){byId[s.id]=s;});projects.forEach(function(p){project[p.id]=p;});
     assignments.forEach(function(a){
       var one=project[a.project1],two=project[a.project2];
@@ -459,7 +486,7 @@ var PPEngine = (function () {
         var shared=groupsOf(q.from).filter(function(g){return groupsOf(q.to).indexOf(g)>=0;})[0],w=track[mover]==='Major'?0:Number(shared.split('|')[1]),here=where[mover][w];
         var pick=projects.filter(function(p){return p.finalLength===track[mover]&&p.id!==here;}).map(function(p){return {id:mover,w:w,to:p.id,loss:tier(mover,p.id)-tier(mover,here)};}).sort(function(a,b){return a.loss-b.loss||compare(a.to,b.to);}).filter(function(o){return !attempt([o],any,false,true,everyone);})[0];
         if(!pick){stuck[q.line.row]='Could not be moved apart without breaking another rule';break;}
-        attempt([pick],any,false,false,everyone);apart.push(q);
+        attempt([pick],any,false,false,everyone);apart.push(q);pulled[mover]=true;
         remark(mover,'flags',mover!==q.from?'Moved because a classmate asked not to work with them.':'Moved to another group because of a "Not with" friend request. '+(pick.loss>0?'Fit dropped '+pick.loss+(pick.loss===1?' step.':' steps.'):'Fit did not drop.'));
       }
     });
@@ -494,7 +521,7 @@ var PPEngine = (function () {
       });});
       if(!done){why[id]=first;return;}
       joined.push(done.q);withs.forEach(function(o){if(done.q.mutual&&o.from===done.q.to&&o.to===done.q.from)joined.push(o);});
-      var asked=done.mover===id||done.q.mutual;
+      var asked=done.mover===id||done.q.mutual;if(!done.switched)pulled[done.mover]=true;
       remark(done.mover,'reason',(done.switched?'Switched weeks':'Moved')+' to be with '+name(done.other)+(asked?', who they asked to work with.':', who asked to work with them.'));
       if(done.third)remark(done.third,'reason','Swapped into this group so classmates who asked to work together could, with no worse fit.');
     });
@@ -567,7 +594,9 @@ var PPEngine = (function () {
     var out=assignments.map(function(a){
       var w=where[a.studentId];
       if(!w||!notes[a.studentId]&&w[0]===a.project1&&w[1]===(a.project2||null))return a;
-      var b=describe(byId[a.studentId],w[1]?w:[w[0]],projects,cfg,choices,run),n=notes[a.studentId]||{reason:[],flags:[]};
+      // The note about the friend request says why a student it moved isn't in a project they checked.
+      var before=[a.project1,a.project2||null],skip=pulled[a.studentId]?w.map(function(pid,k){return pid!==before[k];}):null;
+      var b=describe(byId[a.studentId],w[1]?w:[w[0]],projects,cfg,choices,run,skip),n=notes[a.studentId]||{reason:[],flags:[]};
       if(n.reason.length)b.reason+=' '+n.reason.join(' ');b.flags=b.flags.concat(n.flags);return b;
     });
     return {assignments:out,summary:summary};
