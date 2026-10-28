@@ -100,6 +100,28 @@ test('a hand-typed row matching only one last name in its grade merges with a fl
   assert.ok(result.students.find(s=>s.id==='chris@example.org').issues.includes('Matched a hand-typed row by last name only. Check it\'s the same student.'));
   assert.ok(result.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME' && i.severity==='warning' && i.studentId==='chris@example.org'));
 });
+test('a trip or leader hand-typed row merges only by full name, never by last name alone',()=>{
+  for (const [color,status] of [['#00ffff','trip'],['#ff9900','leader']]) {
+    // One form shares the last name: Ana stays her own excluded row and Ben is still placed.
+    const one=parser.prepare([table([row('ben@example.org','Rivera, Ben'),typed('Rivera, Ana')],12,{1:color})],projects);
+    const ana=one.students.find(s=>s.name==='Rivera, Ana'), ben=one.students.find(s=>s.name==='Rivera, Ben');
+    assert.equal(one.students.length,2); assert.equal(one.stats.mergedRows,0);
+    assert.equal(ana.status,status); assert.equal(ben.status,'eligible'); assert.ok(!ben.issues.some(x=>/hand-typed/.test(x)));
+    assert.ok(!one.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME'));
+    const run=engine.sort(one.students,projects,smallRun,{});
+    assert.equal(run.assignments.find(a=>a.studentId===ben.id).status,'placed'); assert.equal(run.assignments.find(a=>a.studentId===ana.id).status,'excluded');
+    // Two forms share the last name: Alex stays excluded instead of going to review.
+    const two=parser.prepare([table([row('sam@example.org','Kim, Sam'),row('jordan@example.org','Jordan Kim'),typed('Kim, Alex')],12,{2:color})],projects);
+    assert.equal(two.students.find(s=>s.name==='Kim, Alex').status,status);
+    assert.equal(two.students.filter(s=>s.email && s.status==='eligible').length,2);
+    assert.ok(!two.issues.some(i=>i.code==='HAND_TYPED_UNCLEAR'));
+  }
+  // A green row still merges by last name alone, with the flag.
+  const green=parser.prepare([table([row('phil@example.org','Lee, Phil'),typed('Lee, Pat')],12,{1:'#00ff00'})],projects);
+  assert.equal(green.students.length,1); assert.equal(green.students[0].status,'late');
+  assert.ok(green.students[0].issues.includes('Matched a hand-typed row by last name only. Check it\'s the same student.'));
+  assert.ok(green.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME' && i.severity==='warning'));
+});
 test('unmatched hand-typed rows become late with a flag, while trip colors stay trips',()=>{
   const result=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Example, Quinn'),typed('Example, Blue')],12,{2:'#00ffff'})],projects);
   const quinn=result.students.find(s=>s.name==='Example, Quinn'), blue=result.students.find(s=>s.name==='Example, Blue');

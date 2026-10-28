@@ -65,7 +65,7 @@ Sources are `Senior`, `Junior`, `Sophomore` and `Projects`. Normal preparation a
 **Prepare students** handles a few cases from the real forms, and `PP Input check` lists each one:
 
 - Two students who sent forms from the same email both stay eligible. Each Student ID adds the name to the email, such as `jo@example.org:smith-jo`. Use that ID in `Gender` or `Status changes` for either student. The same student sending the form twice keeps only the newest response.
-- A hand-typed row (a name with no email or timestamp) merges into the matching form in its grade, and its trip, freshman-leader or green color wins. With no matching form, the student is marked late and placed after everyone else. If more than one form could match, the row goes to review.
+- A hand-typed row (a name with no email or timestamp) merges into the matching form in its grade, and its trip, freshman-leader or green color wins. A green or uncolored row can also merge into the only form in its grade with the same last name, with a warning. A trip or freshman-leader row needs a full-name match; otherwise it stays its own row and isn't placed. With no matching form, a green or uncolored row is marked late and placed after everyone else. If more than one form could match, the row goes to review.
 - An answer about last year's project that can't be matched never blocks a student. Projects it does name still count as repeats.
 
 ## Optional private workbook preview

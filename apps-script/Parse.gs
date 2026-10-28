@@ -291,11 +291,14 @@ var PPParser = (function () {
     });
     // Hand-typed rows have a name but no email or timestamp. Each one joins the one form
     // in its grade with a matching name, or the last name alone if only one form has it.
+    // A trip or leader row needs the full name: a shared last name would turn a student
+    // who filled out the form into a trip or leader.
     var responses = kept.filter(function (s) { return s.email && s._time !== null; });
     var handTyped = kept.filter(function (s) { return !s.email && s._time === null && s._nameKey; }).map(function (row) {
       var sameGrade = responses.filter(function (s) { return s.grade === row.grade; });
       var full = sameGrade.filter(function (s) { return sameName(row.name, s.name); });
-      var lastOnly = sameGrade.filter(function (s) { return sameLastName(nameParts(row.name), nameParts(s.name)); });
+      var excluded = row._colorStatus === 'trip' || row._colorStatus === 'leader';
+      var lastOnly = full.length || excluded ? [] : sameGrade.filter(function (s) { return sameLastName(nameParts(row.name), nameParts(s.name)); });
       return {row:row, candidates:full.length ? full : lastOnly, lastOnly:!full.length};
     });
     var colorWords = {trip:'trip', leader:'freshman leader', late:'green'};
