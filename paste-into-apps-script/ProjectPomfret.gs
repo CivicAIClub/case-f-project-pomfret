@@ -1069,19 +1069,40 @@ var PPEngine = (function () {
       if(c.length&&p.length!=='Either'&&p.length!==c.length)issues.push(note('LENGTH_OVERRIDE','warning',p.name+' changes from '+p.length+' to '+c.length+' by project choice.',{projectId:p.id}));
       return Object.assign({},p,{finalLength:length});
     }).sort(function(a,b){return Number(mandatory(b,choices))-Number(mandatory(a,choices))||(scores[b.id]||0)-(scores[a.id]||0)||compare(a.id,b.id);});
-    var selected=[];
+    var selected=[],tried={},minorInterest={};
+    // Minor interest: students who asked for Minors or weren't sure, and checked the project.
+    students.filter(function(s){return eligible(s)&&s.preference!=='Major';}).forEach(function(s){arr(s.choices).filter(function(id,i,all){return all.indexOf(id)===i;}).forEach(function(id){minorInterest[id]=(minorInterest[id]||0)+1;});});
     function add(p){
       var blocked=selected.filter(function(q){return conflicts(p.id,q.id,choices);});
       if(blocked.length){if(mandatory(p,choices))issues.push(note('MANDATORY_CONFLICT','error','Required projects cannot run together: '+p.name+' and '+blocked.map(function(q){return q.name;}).join(', '),{projectId:p.id}));return false;}
       selected.push(p);return true;
     }
+    function drop(p){selected.splice(selected.indexOf(p),1);}
+    function length(name){return selected.filter(function(p){return p.finalLength===name;});}
+    function next(test){return all.filter(function(p){return selected.indexOf(p)<0&&!tried[p.id]&&test(p);})[0];}
+    function lowest(test){return selected.filter(function(p){return !mandatory(p,choices)&&test(p);}).sort(function(a,b){return all.indexOf(b)-all.indexOf(a);})[0];}
     all.filter(function(p){return mandatory(p,choices);}).forEach(add);
     if(selected.length>cfg.projectCount)issues.push(note('TOO_MANY_REQUIRED','error','There are more required projects than the total you chose.'));
-    function countMinor(){return selected.filter(function(p){return p.finalLength==='Minor';}).length;}
-    // Give required Either projects a length, then fill Minor slots before Majors.
-    selected.filter(function(p){return p.finalLength==='Either';}).forEach(function(p){p.finalLength=countMinor()<cfg.minorProjects?'Minor':'Major';});
-    all.filter(function(p){return selected.indexOf(p)<0&&(p.finalLength==='Minor'||p.finalLength==='Either');}).forEach(function(p){if(selected.length<cfg.projectCount&&countMinor()<cfg.minorProjects){var old=p.finalLength;p.finalLength='Minor';if(!add(p))p.finalLength=old;}});
-    all.filter(function(p){return selected.indexOf(p)<0&&(p.finalLength==='Major'||p.finalLength==='Either');}).forEach(function(p){if(selected.length<cfg.projectCount){var old=p.finalLength;p.finalLength='Major';if(!add(p))p.finalLength=old;}});
+    // Which projects run is decided by score alone. Their lengths come after.
+    all.forEach(function(p){if(selected.length<cfg.projectCount&&selected.indexOf(p)<0)add(p);});
+    // Too few projects that can run as Minors: bring in the next best ones in place of the
+    // lowest-scoring Majors.
+    for(var p;length('Minor').length+length('Either').length<cfg.minorProjects&&(p=next(function(x){return x.finalLength!=='Major';}));){
+      var out=null;tried[p.id]=true;
+      if(selected.length>=cfg.projectCount){out=lowest(function(x){return x.finalLength==='Major';});if(!out)break;drop(out);}
+      if(!add(p)&&out)add(out);
+    }
+    // More Minor-only projects than Minor slots: the lowest-scoring ones make room for the next best
+    // Major or Either projects. A Minor-only project never runs as a Major.
+    for(var extra;length('Minor').length>cfg.minorProjects&&(extra=lowest(function(x){return x.finalLength==='Minor';}));){
+      drop(extra);tried[extra.id]=true;
+      var instead=next(function(x){return x.finalLength!=='Minor';});if(instead){tried[instead.id]=true;add(instead);}
+    }
+    // The Minor slots take every Minor-only project, then the Either projects with the most Minor
+    // interest. Every other Either project runs as a Major.
+    var slots=cfg.minorProjects-length('Minor').length;
+    length('Either').sort(function(a,b){return (minorInterest[b.id]||0)-(minorInterest[a.id]||0)||all.indexOf(a)-all.indexOf(b);}).forEach(function(p,i){p.finalLength=i<slots?'Minor':'Major';});
+    function countMinor(){return length('Minor').length;}
     if(selected.length!==cfg.projectCount)issues.push(note('PROJECT_COUNT_SUGGESTION','warning','Selected '+selected.length+' projects; setting requests '+cfg.projectCount+'.'));
     if(countMinor()!==cfg.minorProjects)issues.push(note('MINOR_COUNT_SUGGESTION','warning','Selected '+countMinor()+' Minor projects; setting requests '+cfg.minorProjects+'.'));
     return {projects:selected.sort(function(a,b){return compare(a.id,b.id);}),issues:issues};

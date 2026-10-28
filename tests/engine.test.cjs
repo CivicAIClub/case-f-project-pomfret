@@ -415,3 +415,29 @@ test('students with unknown gender never move for gender, and with balanceGender
   assert.deepEqual(off.assignments,none.assignments);
   assert.ok(genderMessages(off).length>0 && genderMessages(off).every(m=>/\(\d+ with unknown gender\)\. Gender balancing is turned off in Settings\.$/.test(m)));
 });
+
+// Students who each checked one project, so each project's score is set by how many checked it.
+const fans=(id,n,preference)=>Array.from({length:n},(_,i)=>s(id+'-fan'+i,{choices:[id],preference}));
+const lengths=plan=>Object.fromEntries(plan.projects.map(x=>[x.id,x.finalLength]));
+test('Minor-only projects fill the Minor slots first, so LARP runs as a Minor and Biomimicry (Either) as a Major',()=>{
+  const projects=[...['m1','m2','m3','m4','m5'].map(id=>p(id,'Minor')),p('e6','Either'),p('e7','Either'),p('larp','Minor'),p('biomimicry','Either'),p('j1'),p('j2'),p('j3')];
+  // The seven top Minor-or-Either projects, then Biomimicry above LARP by score.
+  const students=[...['m1','m2','m3','m4','m5','e6','e7'].flatMap(id=>fans(id,10,'Not sure')),...fans('biomimicry',8,'Major'),...fans('larp',6,'Not sure'),...fans('j1',4,'Major'),...fans('j2',3,'Major'),...fans('j3',2,'Major')];
+  const plan=lengths(E.propose(students,projects,{...E.defaults,projectCount:11,minorProjects:8},{}));
+  assert.equal(plan.larp,'Minor'); assert.equal(plan.biomimicry,'Major');
+  assert.deepEqual(Object.keys(plan).filter(id=>plan[id]==='Minor').sort(),['e6','e7','larp','m1','m2','m3','m4','m5']);
+});
+test('extra Minor-only projects make room for the next best Major, and too few Minor projects bring in the next best ones',()=>{
+  // Three Minor-only projects for two Minor slots: the weakest gives way to the next Major.
+  let plan=lengths(E.propose([...fans('m1',9,'Minor'),...fans('m2',8,'Minor'),...fans('m3',7,'Minor'),...fans('j1',3,'Major'),...fans('j2',2,'Major')],[p('m1','Minor'),p('m2','Minor'),p('m3','Minor'),p('j1'),p('j2')],{...E.defaults,projectCount:4,minorProjects:2},{}));
+  assert.deepEqual(plan,{j1:'Major',j2:'Major',m1:'Minor',m2:'Minor'});
+  // Majors score highest, but three Minor slots need three projects that can run as Minors.
+  plan=lengths(E.propose([...['j1','j2','j3','j4'].flatMap(id=>fans(id,9,'Major')),...fans('m1',3,'Minor'),...fans('e1',2,'Minor'),...fans('m2',1,'Minor')],[p('j1'),p('j2'),p('j3'),p('j4'),p('m1','Minor'),p('e1','Either'),p('m2','Minor')],{...E.defaults,projectCount:4,minorProjects:3},{}));
+  assert.deepEqual(plan,{e1:'Minor',j1:'Major',m1:'Minor',m2:'Minor'});
+});
+test('Project choices still override the suggested lengths and runs',()=>{
+  const projects=[p('m1','Minor'),p('e1','Either'),p('e2','Either'),p('j1')];
+  const students=[...fans('e1',9,'Not sure'),...fans('e2',8,'Not sure'),...fans('m1',7,'Minor'),...fans('j1',6,'Major')];
+  const plan=lengths(E.propose(students,projects,{...E.defaults,projectCount:3,minorProjects:2},{e1:{length:'Major'},j1:{run:false}}));
+  assert.deepEqual(plan,{e1:'Major',e2:'Minor',m1:'Minor'});
+});
