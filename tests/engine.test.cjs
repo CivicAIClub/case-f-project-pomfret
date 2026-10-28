@@ -262,7 +262,7 @@ test('a lock places a student exactly where the row says, before leaders and eve
   // x asked for Minors and didn't check b; j1 is the listed leader of a. Both locks win.
   const locks=[{email:'X@Example.org ',name:'',project1:'MAJ-b',project2:'MAJ-b',row:2},{email:'',name:'Practice j1',project1:'b',project2:'',row:3}];
   const r=E.sort(others,projects,{...cfg,minorMin:1,minorTarget:2,minorMax:2},{a:{leaders:['j1']}},{locks}),at=id=>r.assignments.find(a=>a.studentId===id);
-  for(const id of ['x','j1']){assert.equal(at(id).project1,'b');assert.equal(at(id).project2,null);assert.equal(at(id).status,'placed');assert.match(at(id).reason,/^Placed here by Mr\. Litowitz\. /);}
+  for(const id of ['x','j1']){assert.equal(at(id).project1,'b');assert.equal(at(id).project2,null);assert.equal(at(id).status,'placed');assert.match(at(id).reason,/^Locked in place by hand\. /);}
   assert.ok(!at('j1').flags.some(f=>/^Leading/.test(f)));
   assert.equal(errors(r).length,0); assert.equal(r.issues.filter(i=>i.severity==='error').length,0);
   // The other track is allowed: the checker notes it as information.
@@ -302,15 +302,15 @@ test('lock rows find students by email, Student ID or name, and report names the
   const projects=[p('robotics','Major',{name:'Robotics'}),p('glass-fusing','Minor',{name:'Glass Fusing'})];
   const info=E.locks(students,projects,[
     {email:' JO@example.org',name:'',project1:'MAJ-Robotics',project2:'MAJ-Robotics',row:2},
-    {email:'shared@example.org:lee-pat',name:'',project1:'glass-fusing',project2:'',row:3},
+    {email:'shared@example.org:lee-pat',name:'',project1:'glass-fusing',project2:'',why:'  Lives\n off campus ',row:3},
     {email:'',name:'Kim, Sam',project1:'Robotics',project2:'',row:4},
     {email:'shared@example.org',name:'',project1:'Robotics',project2:'',row:5},
     {email:'nobody@example.org',name:'',project1:'Robotics',project2:'',row:6},
     {email:'jo@example.org',name:'',project1:'Robotics',project2:'',row:7},
     {email:'',name:'Kim, Sam',project1:'Pottery',project2:'',row:8}]);
-  assert.deepEqual(info.byStudent['jo@example.org'],{project1:'robotics',project2:'robotics',row:2});
-  assert.deepEqual(info.byStudent['shared@example.org:lee-pat'],{project1:'glass-fusing',project2:null,row:3});
-  assert.deepEqual(info.byStudent['shared@example.org:kim-sam'],{project1:'robotics',project2:null,row:4});
+  assert.deepEqual(info.byStudent['jo@example.org'],{project1:'robotics',project2:'robotics',row:2,why:''});
+  assert.deepEqual(info.byStudent['shared@example.org:lee-pat'],{project1:'glass-fusing',project2:null,row:3,why:'Lives off campus'});
+  assert.deepEqual(info.byStudent['shared@example.org:kim-sam'],{project1:'robotics',project2:null,row:4,why:''});
   assert.deepEqual(info.issues.map(i=>i.code),['LOCK_UNKNOWN_STUDENT','LOCK_UNKNOWN_STUDENT','LOCK_DUPLICATE','LOCK_UNKNOWN_PROJECT']);
   assert.ok(info.issues.every(i=>i.severity==='error'));
   assert.match(info.issues[3].message,/Locked placements row 8 \(Kim, Sam\): "Pottery" isn't a project name/);
@@ -536,4 +536,40 @@ test('with friend requests on, a Not-sure student who named a Major-preference c
   // Never below the minimum: with a minimum of three, z still does Minors.
   const full=E.sort(students,projects,{...cfg,minorMin:3},{},{friends:[ask('z','maj')]});
   assert.equal(track(full,'z'),'Minor');
+});
+
+test('a locked student at fit 6 gets no fit-6 flag or LOW_FIT warning, and the reason gives the Why text',()=>{
+  // L and M checked a and z, and b shares neither their Type nor their UN goal, so b is fit 6 for both.
+  const projects=[p('a'),p('b','Major',{types:['feet'],goals:['9']})],students=[s('L'),s('M'),s('N'),s('O',{choices:['b','z'],types:['feet']}),s('Q',{choices:['b','z'],types:['feet']})],cfg=config({maxSize:4});
+  const locks=[{email:'L@example.org',name:'',project1:'b',project2:'',why:'Needs the ground-floor room',row:2},{email:'M@example.org',name:'',project1:'MAJ-b',project2:'MAJ-b',why:'',row:3}];
+  const r=E.sort(students,projects,cfg,{},{locks}),at=id=>r.assignments.find(a=>a.studentId===id);
+  for(const id of ['L','M']){
+    assert.equal(at(id).project1,'b'); assert.equal(at(id).fit1,6);
+    assert.ok(!at(id).flags.includes('Fit 6: review the placement.'));
+    assert.ok(!r.checks.some(c=>c.code==='LOW_FIT'&&c.studentId===id));
+  }
+  assert.match(at('L').reason,/^Locked in place: Needs the ground-floor room\. /);
+  assert.match(at('M').reason,/^Locked in place by hand\. /);
+  assert.ok(!JSON.stringify(r).includes('Litowitz'));
+  // The same placement without a lock is still flagged.
+  assert.ok(E.check(students,r.projects,r.assignments.map(a=>({...a,locked:undefined})),cfg,{}).some(c=>c.code==='LOW_FIT'&&c.studentId==='L'));
+  assert.ok(E.explain(students[0],['b'],r.projects,cfg,{}).flags.includes('Fit 6: review the placement.'));
+  // A lock with no projects keeps the student out, and its reason gives the Why too.
+  const out=E.sort(students,projects,cfg,{},{locks:[{email:'N@example.org',name:'',project1:'',project2:'',why:'Away that week.',row:2}]});
+  assert.equal(out.assignments.find(a=>a.studentId==='N').reason,'Locked in place: Away that week. Not placed in a project.');
+});
+
+test('a friend request written with two Student IDs that share an email is used',()=>{
+  const {students,projects,cfg}=pairRun();
+  // Jo and Jane sent their forms from one email, so each Student ID adds the name.
+  const siblings=[...students,s('jo@example.org:smith-jo',{name:'Jo Smith',email:'jo@example.org',choices:['a','b']}),s('jo@example.org:smith-jane',{name:'Jane Smith',email:'jo@example.org',choices:['a','b']})];
+  const row=ask('jo','jane',undefined,2,{name:'Jo Smith',classmate:'Jane Smith',email:'jo@example.org:smith-jo',classmateEmail:' JO@example.org:Smith-Jane'});
+  const r=E.sort(siblings,projects,{...cfg,maxSize:5},{},{friends:[row]}),at=id=>r.assignments.find(a=>a.studentId===id);
+  assert.deepEqual(r.friends.map(x=>x.result),['Together']);
+  assert.equal(at('jo@example.org:smith-jo').project1,at('jo@example.org:smith-jane').project1);
+  assert.ok(!r.issues.some(i=>i.code==='FRIEND_SHARED_EMAIL'));
+  // The shared email alone still can't tell them apart, so that row is skipped with the warning.
+  const bare=E.sort(siblings,projects,{...cfg,maxSize:5},{},{friends:[{...row,classmateEmail:'jo@example.org'}]});
+  assert.deepEqual(bare.friends.map(x=>[x.result,x.why]),[['Not applied','Two students share this email']]);
+  assert.ok(bare.issues.some(i=>i.code==='FRIEND_SHARED_EMAIL'));
 });

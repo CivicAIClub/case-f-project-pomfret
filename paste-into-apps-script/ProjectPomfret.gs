@@ -1157,18 +1157,18 @@ var PPEngine = (function () {
       var st=found[0],who=st.name||st.id,p1=project(r.project1),p2=project(r.project2);
       if(p1===undefined||p2===undefined){issues.push(note('LOCK_UNKNOWN_PROJECT','error',where+' ('+who+'): "'+String(p1===undefined?r.project1:r.project2).trim()+"\" isn't a project name, ID or MAJ-/MIN- label, so the lock was not used.",{studentId:st.id}));return;}
       if(out[st.id]){issues.push(note('LOCK_DUPLICATE','error','Locked placements has more than one row for '+who+'. Row '+out[st.id].row+' was used.',{studentId:st.id}));return;}
-      out[st.id]={project1:p1?p1.id:null,project2:p2?p2.id:null,row:r.row};
+      out[st.id]={project1:p1?p1.id:null,project2:p2?p2.id:null,row:r.row,why:String(r.why==null?'':r.why).replace(/\s+/g,' ').trim()};
     });
     return {byStudent:out,issues:issues};
   }
   // A lock with a Major in one column, or the same Major in both, is one Major. Any other lock stays
-  // exactly as Mr. Litowitz wrote it, and lockProblems reports the rules it breaks.
+  // exactly as it was written, and lockProblems reports the rules it breaks.
   function lockShape(lock,byId){
     var p1=lock.project1,p2=lock.project2,first;
     if(!p1&&p2&&byId[p2].finalLength==='Major'){p1=p2;p2=null;}
     if(p1&&p2===p1&&byId[p1].finalLength==='Major')p2=null;
     first=byId[p1||p2];
-    return {project1:p1,project2:p2,track:first?first.finalLength:null};
+    return {project1:p1,project2:p2,track:first?first.finalLength:null,why:lock.why||''};
   }
   // Locks whose projects all run in this pass. A lock into a project that isn't running is an
   // error, and that student is placed by the normal rules.
@@ -1304,23 +1304,25 @@ var PPEngine = (function () {
     return orient;
   }
   // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
-  // when Mr. Litowitz moves a student by hand. byHand drops the note about the Minor student minimum,
-  // which doesn't apply to a student placed on purpose (by hand, by a lock or as a leader).
-  function explain(s,ids,projects,input,choices,byHand){
+  // when a student is moved by hand. byHand drops the note about the Minor student minimum, which
+  // doesn't apply to a student placed on purpose (by hand, by a lock or as a leader). locked also
+  // drops the Fit 6 flag, because a person chose those projects (by hand or with a lock).
+  function explain(s,ids,projects,input,choices,byHand,locked){
     var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
     var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
-    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to reach the Minor student minimum.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
+    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to reach the Minor student minimum.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(!locked&&fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
     return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
   }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
   // A locked student goes exactly where their row says, even on the other track or in a project
-  // they didn't check. A lock with no projects keeps the student out of every group.
+  // they didn't check. A lock with no projects keeps the student out of every group. The reason
+  // starts with the row's Why and never says who locked it; Locked placements keeps that.
   function lockedAssignment(s,lock,projects,cfg,choices){
-    var a=emptyAssignment(s),ids=[lock.project1,lock.project2].filter(Boolean),byId={};projects.forEach(function(p){byId[p.id]=p;});a.locked=true;
-    if(!ids.length){a.status='review';a.reason='Mr. Litowitz took this student out of every project, so they are not placed.';return a;}
-    var placement=explain(s,ids,projects,cfg,choices,true);
+    var a=emptyAssignment(s),ids=[lock.project1,lock.project2].filter(Boolean),byId={},why=lock.why?'Locked in place: '+lock.why+(/[.!?]$/.test(lock.why)?'':'.'):'Locked in place by hand.';projects.forEach(function(p){byId[p.id]=p;});a.locked=true;
+    if(!ids.length){a.status='review';a.reason=why+' Not placed in a project.';return a;}
+    var placement=explain(s,ids,projects,cfg,choices,true,true);
     a.status='placed';a.project1=lock.project1;a.project2=lock.project2;a.fit1=lock.project1?fit(s,byId[lock.project1],cfg).tier:null;a.fit2=lock.project2?fit(s,byId[lock.project2],cfg).tier:null;
-    a.reason='Placed here by Mr. Litowitz. '+placement.reason;a.flags=placement.flags;return a;
+    a.reason=why+' '+placement.reason;a.flags=placement.flags;return a;
   }
   function allocate(students,projects,cfg,choices,scores,issues,run){
     run.locked=applyLocks(projects,issues,run);
@@ -1368,12 +1370,14 @@ var PPEngine = (function () {
   }
   // Rows from the reviewed Friend requests tab. Only rows marked Use count, and students are matched
   // by email. With useFriendRequests off nothing is applied, and every row says so.
+  // Email and Classmate email take an email or a Student ID such as jo@example.org:smith-jo, like the
+  // Gender tab, so students who share an email can still be named. A shared email alone is skipped.
   function resolveFriends(students,rows,cfg){
-    var byEmail={},issues=[],requests=[],report=[];
-    students.forEach(function(s){var k=key(s.email);if(k)(byEmail[k]=byEmail[k]||[]).push(s);});
+    var byKey={},issues=[],requests=[],report=[];
+    students.forEach(function(s){[key(s.id),key(s.email)].forEach(function(k){if(k&&(byKey[k]=byKey[k]||[]).indexOf(s)<0)byKey[k].push(s);});});
     arr(rows).forEach(function(r){
       var line={row:r.row,name:String(r.name||'').trim(),classmate:String(r.classmate||'').trim(),request:String(r.request||'').trim(),result:'Not applied',why:''};
-      var kind=plain(r.request)==='with'?'With':plain(r.request)==='not with'?'Not with':null,a=byEmail[key(r.email)]||[],b=byEmail[key(r.classmateEmail)]||[];
+      var kind=plain(r.request)==='with'?'With':plain(r.request)==='not with'?'Not with':null,a=byKey[key(r.email)]||[],b=byKey[key(r.classmateEmail)]||[];
       if(!line.name&&!line.classmate&&!key(r.email)&&!key(r.classmateEmail))return;
       report.push(line);
       if(!cfg.useFriendRequests)line.why='Friend requests are turned off in Settings';
@@ -1381,8 +1385,8 @@ var PPEngine = (function () {
       else if(!key(r.email)||!key(r.classmateEmail))line.why='Email or classmate email is blank';
       else if(!kind)line.why='Request must be With or Not with';
       else if(a.length>1||b.length>1){line.why='Two students share this email';issues.push(note('FRIEND_SHARED_EMAIL','warning','Two students share this email, so this friend request was skipped.',{source:{sheet:'Friend requests',row:r.row}}));}
-      else if(!a.length)line.why='No student has this email';
-      else if(!b.length)line.why='No student has the classmate email';
+      else if(!a.length)line.why='No student has this email or Student ID';
+      else if(!b.length)line.why='No student has the classmate email or Student ID';
       else if(a[0]===b[0])line.why="A student can't name themselves";
       else{line.request=kind;line.name=line.name||a[0].name;line.classmate=line.classmate||b[0].name;requests.push({from:a[0].id,to:b[0].id,kind:kind,named:r.namedEachOther===true,line:line});}
     });
@@ -1631,9 +1635,10 @@ var PPEngine = (function () {
       if(p1&&p2&&p1.finalLength!==p2.finalLength)out.push(note('MIXED_TRACKS','error','Project #1 and Project #2 mix a Major and a Minor. Use one Major (the same label twice, or one label and a blank) or two different Minors.',{studentId:s.id}));
       else{if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));}
       if(p1)members[p1.id][0].push(s);if(p2)members[p2.id][1].push(s);
-      [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
-      // A track change Mr. Litowitz made by hand or with a lock is his decision, so it is information only.
-      var byHand=a.locked===true?' Placed here by Mr. Litowitz.':a.movedByHand===true?' Moved by hand.':'';
+      // A fit 6 that a person chose, with a lock or by hand, isn't a warning.
+      [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6&&a.locked!==true&&a.movedByHand!==true)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
+      // A track change made by hand or with a lock is a person's decision, so it is information only.
+      var byHand=a.locked===true?' Locked in place.':a.movedByHand===true?' Moved by hand.':'';
       if(s.preference==='Minor'&&p1&&p1.finalLength==='Major')out.push(note('MINOR_PREFERENCE_CHANGED',byHand?'info':'warning','This student asked for Minors and received a Major.'+byHand,{studentId:s.id}));if(s.preference==='Major'&&p1&&p1.finalLength==='Minor')out.push(note('MAJOR_TO_MINOR',byHand?'info':cfg.allowMajorToMinor?'warning':'error','This student asked for a Major and received Minors.'+byHand,{studentId:s.id}));
     });
     students.forEach(function(s){if(!seen[s.id])out.push(note('MISSING_STUDENT','error','Student has no assignment or review row.',{studentId:s.id}));else if(seen[s.id]!==1)out.push(note('DUPLICATE_ASSIGNMENT','error','Student has more than one assignment row.',{studentId:s.id}));if(s.previousKnown===false&&eligible(s))out.push(note('PREVIOUS_UNAVAILABLE','warning','Past projects are missing for this student, so the app could not fully check for repeats.',{studentId:s.id}));});
@@ -2053,8 +2058,8 @@ var PPAdapter = (function () {
     write('PP Friend check', ['Name', 'Classmate', 'Request', 'Result', 'Why'], (rows || []).map(function (r) { return [r.name, r.classmate, r.request, r.result, r.why]; }));
   }
   function readLocks() {
-    return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false).map(function (r) {
-      return { email: text(r.Email), name: text(r.Name), project1: text(r['Project 1']), project2: text(r['Project 2']), row: r._row };
+    return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false, ['Why']).map(function (r) {
+      return { email: text(r.Email), name: text(r.Name), project1: text(r['Project 1']), project2: text(r['Project 2']), why: text(r.Why), row: r._row };
     });
   }
   // The Email column holds the student's email, or their Student ID when the email is missing or
@@ -2153,7 +2158,7 @@ var PPAdapter = (function () {
     // Sort would, write it back, and let the checks below report any rule the move breaks.
     function moveByHand(tab, header, r, a, student, original) {
       var ids = [a.project1, a.project2].filter(Boolean);
-      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
+      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
       a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
       if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
       var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };
@@ -2179,6 +2184,8 @@ var PPAdapter = (function () {
           current.push(a);
           return;
         }
+        // A student Sort placed with a lock is still locked, so the checks treat it as a person's decision.
+        if (original && original.locked === true) a.locked = true;
         ['project1', 'project2'].forEach(function (key, i) {
           var label = 'Fit #' + (i + 1), raw = r[label], fit = text(raw) === '' ? null : Number(raw);
           if ((typeof raw === 'boolean') || (fit !== null && (!Number.isInteger(fit) || fit < 1 || fit > 6)) || (a[key] && fit === null) || (!a[key] && fit !== null)) {

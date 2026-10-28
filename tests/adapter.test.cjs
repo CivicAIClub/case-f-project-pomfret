@@ -430,7 +430,7 @@ test('Check again saves each move to Locked placements, and Sort keeps it there'
   assert.equal(f.adapter.checkAgain().savedMoves, 0);
   const result = f.adapter.sort('Rerun after a move'), a = result.assignments.find(x => x.studentId === pick.row[0]);
   assert.equal(result.savedMoves, 0);
-  assert.equal(a.project1, target.id); assert.match(a.reason, /^Placed here by Mr\. Litowitz\. /);
+  assert.equal(a.project1, target.id); assert.match(a.reason, /^Locked in place: Moved by hand\. /);
   const log = f.sheets.get('PP Run log').data;
   assert.equal(log[log.length - 1][log[0].indexOf('Run by')], 'teacher@example.org');
 });
@@ -512,7 +512,26 @@ test('Setup keeps hand-typed rows in Locked placements; Sort uses them and repor
   assert.equal(at('practice1@example.org').project1, 'model-un');
   assert.equal(at('practice2@example.org').project1, 'model-un');
   assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'LOCK_UNKNOWN_PROJECT' && /Underwater Basket Weaving/.test(r[2])));
+  // The reason gives the row's Why, and only Locked placements says who locked a student.
+  assert.match(at('practice1@example.org').reason, /^Locked in place: Asked to stay with his advisor\. /);
+  assert.match(at('practice2@example.org').reason, /^Locked in place by hand\. /);
+  for (const [name, tab] of f.sheets) if (name !== 'Locked placements') assert.ok(!JSON.stringify(tab.data).includes('Litowitz'), name);
   assert.deepEqual(lockRows(f), typed);
+});
+test('a student moved into a fit 6 project gets no fit-6 flag or LOW_FIT warning, in Check again and after Sort', () => {
+  const { f, run } = practiceRun('Fit 6 lock'), majors = run.projects.filter(p => p.finalLength === 'Major');
+  const fit6 = x => majors.find(p => p.id !== x.a.project1 && realEngine.fit(x.s, p).tier === 6);
+  const pick = placedRows(f, run).find(x => !x.a.project2 && fit6(x)), id = pick.row[0];
+  pick.row[2] = pick.row[3] = label(fit6(pick));
+  const lowFit = () => f.sheets.get('PP Check').data.some(r => r[1] === 'LOW_FIT' && r[3] === id);
+  const flags = () => f.sheets.get(pick.tab).data.find(r => r[0] === id)[8];
+  assert.equal(f.adapter.checkAgain().savedMoves, 1);
+  assert.equal(lowFit(), false); assert.doesNotMatch(flags(), /Fit 6/);
+  f.adapter.sort('Rerun with the lock');
+  assert.equal(lowFit(), false); assert.doesNotMatch(flags(), /Fit 6/);
+  // Check again after Sort still treats the student as locked.
+  assert.equal(f.adapter.checkAgain().savedMoves, 0);
+  assert.equal(lowFit(), false);
 });
 
 const FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];

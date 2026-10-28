@@ -391,8 +391,8 @@ var PPAdapter = (function () {
     write('PP Friend check', ['Name', 'Classmate', 'Request', 'Result', 'Why'], (rows || []).map(function (r) { return [r.name, r.classmate, r.request, r.result, r.why]; }));
   }
   function readLocks() {
-    return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false).map(function (r) {
-      return { email: text(r.Email), name: text(r.Name), project1: text(r['Project 1']), project2: text(r['Project 2']), row: r._row };
+    return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false, ['Why']).map(function (r) {
+      return { email: text(r.Email), name: text(r.Name), project1: text(r['Project 1']), project2: text(r['Project 2']), why: text(r.Why), row: r._row };
     });
   }
   // The Email column holds the student's email, or their Student ID when the email is missing or
@@ -491,7 +491,7 @@ var PPAdapter = (function () {
     // Sort would, write it back, and let the checks below report any rule the move breaks.
     function moveByHand(tab, header, r, a, student, original) {
       var ids = [a.project1, a.project2].filter(Boolean);
-      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
+      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
       a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
       if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
       var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };
@@ -517,6 +517,8 @@ var PPAdapter = (function () {
           current.push(a);
           return;
         }
+        // A student Sort placed with a lock is still locked, so the checks treat it as a person's decision.
+        if (original && original.locked === true) a.locked = true;
         ['project1', 'project2'].forEach(function (key, i) {
           var label = 'Fit #' + (i + 1), raw = r[label], fit = text(raw) === '' ? null : Number(raw);
           if ((typeof raw === 'boolean') || (fit !== null && (!Number.isInteger(fit) || fit < 1 || fit > 6)) || (a[key] && fit === null) || (!a[key] && fit !== null)) {
