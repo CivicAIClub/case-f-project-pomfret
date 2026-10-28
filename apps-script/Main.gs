@@ -11,7 +11,7 @@ var PPAdapter = (function () {
     minSize: 'Minimum students in each group or each Minor week.',
     targetSize: 'Preferred group size.', maxSize: 'Absolute group size limit.',
     projectCount: 'Target number of distinct running projects.', minorProjects: 'Target distinct Minor projects, each running twice.',
-    minorMin: 'Minimum students taking two Minors.', minorTarget: 'Target students taking two Minors.',
+    minorMin: 'Minimum students taking two Minors.', minorTarget: 'Not used by Sort or the project suggestion. Sort puts Not-sure students who lean Minor in Minors, and others only to reach the minimum.',
     minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Let Major-preference students take Minors only while Minors are below minorMin; each move is flagged.',
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.',
     tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.',

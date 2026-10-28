@@ -1,6 +1,6 @@
 /* Deterministic, local-only placement prototype. The cohort is selected before
- * optimization: Minor-preference students, then the Not-sure students who checked
- * the most running Minors. Within each Major/Minor cohort, the flow first keeps students
+ * optimization: Minor-preference students, then the Not-sure students who lean Minor,
+ * and others only to reach the minimum. Within each Major/Minor cohort, the flow first keeps students
  * in projects they checked, seniors first, then improves fit. This does not guarantee
  * ordered grade means or a globally best cohort/project plan. Balanced quotas
  * are relaxed within the cap when needed; incomplete results are not proofs
@@ -170,23 +170,39 @@ var PPEngine = (function () {
     });
     return out;
   }
+  // Running projects a student checked, other than last year's, counted by length.
+  function checkedTracks(s,byId){var n={Major:0,Minor:0};arr(s.choices).forEach(function(id,i,all){var p=byId[id];if(p&&all.indexOf(id)===i&&arr(s.previous).indexOf(id)<0&&n[p.finalLength]!==undefined)n[p.finalLength]++;});return n;}
   function cohort(students,projects,cfg,issues,run){
     var priority=priorityOrder(run),leading=run.leading,locked=run.locked,lockedIds=Object.keys(locked),cap=function(list){return list.reduce(function(n,p){return n+limit(p,cfg,run.choices);},0);};
-    var active=students.filter(function(s){return eligible(s)&&!locked[s.id];}),free=active.filter(function(s){return !leading[s.id];}),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
-    minors.forEach(function(p){running[p.id]=true;});
-    // Locked students count toward the Minor target, and the cohort fills in around them.
+    var active=students.filter(function(s){return eligible(s)&&!locked[s.id];}),free=active.filter(function(s){return !leading[s.id];}),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,byId={};
+    projects.forEach(function(p){byId[p.id]=p;});
+    // Locked students count toward the Minor bounds, and the cohort fills in around them.
     var lockedMinor=lockedIds.filter(function(id){return locked[id].track==='Minor';}).length,placing=active.length+lockedIds.filter(function(id){return locked[id].track;}).length;
     var majorList=projects.filter(function(p){return p.finalLength!=='Minor';}),lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,placing-cap(majorList)),upper=Math.min(cfg.minorMax,cap(minors),placing-majors*cfg.minSize);
     if(lower>upper)issues.push(note('COHORT_CAPACITY','warning','The group sizes cannot fit the requested number of Minor students. Check the project list and Minor student targets.'));
-    var desired=Math.max(0,Math.min(cap(minors),lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget)),minimum=Math.min(desired,lower);
-    function minorChecks(s){return arr(s.choices).filter(function(id,i,all){return running[id]&&all.indexOf(id)===i;}).length;}
-    // Every Minor-preference student does Minors. Not-sure students who checked the most running
-    // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
-    // A leader follows their project's length whatever they asked for.
-    var minor=active.filter(function(s){return leading[s.id]&&leading[s.id].finalLength==='Minor';}).concat(free.filter(function(s){return s.preference==='Minor';}).sort(priority)),unknown=free.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(run.last(a))-Number(run.last(b))||run.tie.students(a,b);});
-    while(lockedMinor+minor.length<desired&&unknown.length)minor.push(unknown.shift());
+    // When the group sizes can't fit both, the maximum wins.
+    var maximum=Math.max(0,upper),minimum=Math.min(lower,maximum),counts={};
+    function count(){return lockedMinor+minor.length;}
+    // A Not-sure student leans Minor when they checked at least two Minors and at least as many Minors
+    // as Majors. unpicked is how many placements they didn't check that two Minors would give them,
+    // minus the same for a Major.
+    function leans(s){var n=counts[s.id];return n.Minor>=2&&n.Minor>=n.Major;}
+    function unpicked(s){var n=counts[s.id];return Math.max(0,2-n.Minor)-(n.Major?0:1);}
+    function lean(s){return counts[s.id].Minor-counts[s.id].Major;}
+    // Every Minor-preference student does Minors. A leader follows their project's length whatever
+    // they asked for.
+    var minor=active.filter(function(s){return leading[s.id]&&leading[s.id].finalLength==='Minor';}).concat(free.filter(function(s){return s.preference==='Minor';}).sort(priority)),taken={};
+    // Not-sure students in order: those who lean Minor, then fewest unpicked placements in Minors, then
+    // the most Minors over Majors, then sophomores, juniors and seniors, then students placed last,
+    // then tie order. Going down it, a student who leans Minor does Minors while the Minor count is
+    // below the maximum. While the count is still below the minimum, the next students do too.
+    var unknown=free.filter(function(s){return s.preference==='Not sure';});
+    unknown.forEach(function(s){counts[s.id]=checkedTracks(s,byId);});
+    unknown.sort(function(a,b){return Number(leans(b))-Number(leans(a))||unpicked(a)-unpicked(b)||lean(b)-lean(a)||a.grade-b.grade||Number(run.last(a))-Number(run.last(b))||run.tie.students(a,b);});
+    unknown.forEach(function(s){if(leans(s)&&count()<maximum){minor.push(s);taken[s.id]=true;}});
+    unknown.forEach(function(s){if(!taken[s.id]&&count()<minimum)minor.push(s);});
     // Major-preference students move only while the Minor count is below its minimum.
-    if(cfg.allowMajorToMinor){var major=free.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(lockedMinor+minor.length<minimum&&major.length)minor.push(major.shift());}
+    if(cfg.allowMajorToMinor){var major=free.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(count()<minimum&&major.length)minor.push(major.shift());}
     var members={};minor.forEach(function(s){members[s.id]=true;});
     return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority),lockedMinor:lockedMinor,lockedMajor:lockedIds.filter(function(id){return locked[id].track==='Major';}).length};
   }

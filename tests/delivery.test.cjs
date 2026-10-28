@@ -28,7 +28,7 @@ test('committed bundle runs practice, preparation, interest, sorting and recheck
   assert.equal(first.result.fingerprint, second.result.fingerprint);
   assert.equal(first.result.assignments.length, 240);
   assert.equal(first.result.summary.placed, 240);
-  assert.equal(first.result.summary.minorStudents, 88);
+  assert.equal(first.result.summary.minorStudents, 96);
   assert.equal(first.result.summary.projectCount, 23);
   assert.equal(first.result.checks.filter(item => item.severity === 'error').length, 0);
   assert.ok(first.sheets.get('PP Check').data.length > 1, 'Review findings must remain visible.');

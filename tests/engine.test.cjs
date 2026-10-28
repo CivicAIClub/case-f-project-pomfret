@@ -108,8 +108,9 @@ test('checker treats each Minor week separately and warns on partial gender data
 test('240-student synthetic run is complete, bounded and reproducible',()=>{
   const projects=Array.from({length:23},(_,i)=>p('p'+i,i<8?'Minor':'Major',{types:[['hands','head','heart','feet'][i%4]],goals:[String(i%5+1)]}));
   const students=Array.from({length:240},(_,i)=>s('demo'+String(i).padStart(3,'0'),{grade:10+i%3,preference:i<88?'Not sure':'Major',choices:[projects[i%23].id,projects[(i+7)%23].id,projects[(i+14)%23].id],types:[['hands','head','heart','feet'][i%4]],goals:[String(i%5+1)]}));
+  // Only eight of the Not-sure students lean Minor, so the Minor count stops at the minimum.
   const start=Date.now(),r=E.sort(students,projects,{},{});
-  assert.equal(r.summary.placed,240);assert.equal(r.summary.minorStudents,88);assert.equal(r.summary.projectCount,23);assert.deepEqual(errors(r),[]);assert.equal(r.fingerprint,E.sort(students,projects,{},{}).fingerprint);assert.ok(Date.now()-start<15000);
+  assert.equal(r.summary.placed,240);assert.equal(r.summary.minorStudents,80);assert.equal(r.summary.projectCount,23);assert.deepEqual(errors(r),[]);assert.equal(r.fingerprint,E.sort(students,projects,{},{}).fingerprint);assert.ok(Date.now()-start<15000);
 });
 
 test('explain gives the fit, reason and flags the sort wrote, and a move by hand drops the Minor minimum note',()=>{
@@ -169,6 +170,85 @@ test('Major-preference students move to Minors only up to the Minor minimum, and
   assert.equal(r.summary.minorStudents,2); assert.ok(at('soph').project2);
   assert.ok(at('soph').flags.includes('This student asked for a Major but received Minors to reach the Minor student minimum.'));
   assert.equal(at('junior').project2,null); assert.equal(at('senior').project2,null);
+});
+
+// Five Majors and three Minors, each holding up to three and all set to run. Three Minor-preference
+// students make the scaled minimum of three, and one Major-preference student fills each Major.
+const leanRun=(extra={})=>({projects:[...['a','b','c','d','e'].map(id=>p(id)),p('m1','Minor'),p('m2','Minor'),p('m3','Minor')],
+  cfg:config({projectCount:8,minorProjects:3,minorMin:3,minorTarget:5,minorMax:6,...extra}),
+  fixed:[s('pref1',{preference:'Minor',choices:['m1','m2']}),s('pref2',{preference:'Minor',choices:['m2','m3']}),s('pref3',{preference:'Minor',choices:['m1','m3']}),...['a','b','c','d','e'].map(id=>s('fill-'+id,{choices:[id,'z']}))],
+  choices:Object.fromEntries(['a','b','c','d','e','m1','m2','m3'].map(id=>[id,{mustRun:true}]))});
+const track=(r,id)=>{const a=r.assignments.find(x=>x.studentId===id);return a.status!=='placed'?a.status:a.project2?'Minor':'Major';};
+const unsure=(id,choices,extra={})=>s(id,{preference:'Not sure',choices,...extra});
+test('a Not-sure student who checked 1 Minor and 3 Majors does a Major while the Minor count is at or above the minimum, even below the target',()=>{
+  const {projects,cfg,fixed,choices}=leanRun(),x=unsure('x',['m1','a','b','c']);
+  // At the minimum of three, two below the target of five.
+  let r=E.sort([...fixed,x],projects,cfg,choices);
+  assert.equal(track(r,'x'),'Major'); assert.equal(r.summary.minorStudents,3);
+  // Above the minimum, one below the target.
+  r=E.sort([...fixed,s('pref4',{preference:'Minor',choices:['m2','m3']}),x],projects,cfg,choices);
+  assert.equal(track(r,'x'),'Major'); assert.equal(r.summary.minorStudents,4);
+  assert.deepEqual(errors(r),[]);
+});
+test('a Not-sure student who checked 3 Minors and 1 Major does Minors, even with the target already met',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3}),r=E.sort([...fixed,unsure('x',['m1','m2','m3','a'])],projects,cfg,choices);
+  assert.equal(track(r,'x'),'Minor'); assert.equal(r.summary.minorStudents,4);
+  assert.deepEqual(errors(r),[]);
+});
+test('a Not-sure student who checked 2 Minors and 5 Majors does a Major when the minimum is met, and goes before one who checked 1 Minor and 1 Major when one more is needed',()=>{
+  const {projects,cfg,fixed,choices}=leanRun(),many=unsure('many',['m1','m2','a','b','c','d','e'],{grade:12}),few=unsure('few',['m1','a'],{grade:10});
+  let r=E.sort([...fixed,many],projects,cfg,choices);
+  assert.equal(track(r,'many'),'Major'); assert.equal(r.summary.minorStudents,3);
+  // A minimum of four needs one more Minor student. In two Minors the senior has no placement they
+  // didn't check and the sophomore has one, so the senior goes first, even though the sophomore is
+  // younger and checked more Minors than Majors.
+  r=E.sort([...fixed,many,few],projects,{...cfg,minorMin:4},choices);
+  assert.equal(track(r,'many'),'Minor'); assert.equal(track(r,'few'),'Major'); assert.equal(r.summary.minorStudents,4);
+});
+test('last year\'s project doesn\'t count as checked when choosing which Not-sure students do Minors',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3});
+  assert.equal(track(E.sort([...fixed,unsure('x',['m1','m2','a'])],projects,cfg,choices),'x'),'Minor');
+  // With m2 last year, x checked one Minor and one Major, so x doesn't lean Minor.
+  assert.equal(track(E.sort([...fixed,unsure('x',['m1','m2','a'],{previous:['m2']})],projects,cfg,choices),'x'),'Major');
+});
+test('the Minor count never goes above the maximum, and never below the minimum when there are enough students',()=>{
+  const {projects,cfg,fixed,choices}=leanRun();
+  // Six Not-sure students lean Minor, but the maximum of six leaves room for three: the sophomores.
+  const leaners=[10,10,10,12,12,12].map((grade,i)=>unsure('lean'+i,['m1','m2','m3'],{grade}));
+  let r=E.sort([...fixed,...leaners],projects,cfg,choices);
+  assert.equal(r.summary.minorStudents,6);
+  assert.deepEqual(leaners.map(x=>track(r,x.id)),['Minor','Minor','Minor','Major','Major','Major']);
+  // Nobody leans Minor and the minimum is five: two Not-sure students reach it, before any
+  // Major-preference student moves.
+  r=E.sort([...fixed,...[0,1,2].map(i=>unsure('even'+i,['m1','a']))],projects,{...cfg,minorMin:5,minorTarget:5},choices);
+  assert.equal(r.summary.minorStudents,5);
+  assert.ok(!r.assignments.some(a=>a.flags.some(f=>/asked for a Major/.test(f))));
+  // A larger invented roster, with the bounds set by minorMin and minorMax.
+  let seed=7;const rand=n=>(seed=seed*48271%2147483647)%n,pool=['a','b','c','d','m1','m2','m3'];
+  const big=[p('a'),p('b'),p('c'),p('d'),p('m1','Minor'),p('m2','Minor'),p('m3','Minor')],bounds=config({minSize:1,targetSize:10,maxSize:14,projectCount:7,minorProjects:3,minorMin:15,minorTarget:20,minorMax:25});
+  for(let round=0;round<10;round++){
+    const roster=Array.from({length:60},(_,i)=>{const picks=[];while(picks.length<3){const c=pool[rand(7)];if(!picks.includes(c))picks.push(c);}return s('r'+i,{grade:10+rand(3),preference:['Major','Major','Not sure','Not sure','Minor'][rand(5)],choices:picks});});
+    const n=E.sort(roster,big,bounds,{}).summary.minorStudents,prefs=roster.filter(x=>x.preference==='Minor').length;
+    assert.ok(n>=15&&n<=Math.max(25,prefs),'round '+round+': '+n+' Minor students');
+  }
+});
+test('Minor-preference students, leaders and locked students are placed as before the Not-sure rule changed',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3});
+  const people=[...fixed,s('pref4',{preference:'Minor',choices:['a','b']}),s('leadMinor',{grade:12,choices:['a','z']}),s('leadMajor',{preference:'Minor',choices:['m1','m2']}),
+    unsure('lockMajor',['m1','m2','m3']),s('lockMinor',{choices:['a','z']}),...[0,1,2].map(i=>unsure('lean'+i,['m1','m2','m3'],{grade:10}))];
+  const locks=[{email:'lockMajor@example.org',name:'',project1:'b',project2:'',row:2},{email:'lockMinor@example.org',name:'',project1:'m2',project2:'m3',row:3}];
+  const r=E.sort(people,projects,cfg,{...choices,m1:{mustRun:true,leaders:['leadMinor']},a:{mustRun:true,leaders:['leadMajor']}},{locks}),at=id=>r.assignments.find(a=>a.studentId===id);
+  // A Minor-preference student does Minors whatever they checked.
+  for(const id of ['pref1','pref2','pref3','pref4'])assert.equal(track(r,id),'Minor',id);
+  // Leaders follow the project they lead, and locks stay exactly as written.
+  assert.ok([at('leadMinor').project1,at('leadMinor').project2].includes('m1')); assert.equal(track(r,'leadMinor'),'Minor');
+  assert.deepEqual([at('leadMajor').project1,at('leadMajor').project2],['a',null]);
+  assert.deepEqual([at('lockMajor').project1,at('lockMajor').project2],['b',null]);
+  assert.deepEqual([at('lockMinor').project1,at('lockMinor').project2],['m2','m3']);
+  // Four Minor-preference students, the Minor leader and the locked Minor student make six, the
+  // maximum, so the Not-sure students who lean Minor do Majors.
+  assert.equal(r.summary.minorStudents,6);
+  for(const id of ['lean0','lean1','lean2'])assert.equal(track(r,id),'Major',id);
 });
 
 test('students who tie are ordered by a fixed shuffle of their ID and tieSeed, never by name or alphabet',()=>{

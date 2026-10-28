@@ -232,7 +232,9 @@ test('a Major shows the same MAJ- label in both columns, and Check again accepts
     if (a.project2) { minors++; assert.match(row[2], /^MIN-/); assert.match(row[3], /^MIN-/); assert.notEqual(row[2], row[3]); }
     else { majors++; assert.match(row[2], /^MAJ-/); assert.equal(row[3], row[2]); assert.equal(row[6], ''); }
   }
-  assert.equal(majors, 152); assert.equal(minors, 88);
+  // Every Not-sure practice student checked four Minors and four Majors, so they lean Minor and fill
+  // the Minors to the maximum.
+  assert.equal(majors, 144); assert.equal(minors, 96);
   let checks = f.adapter.checkAgain();
   assert.equal(checks.filter(c => c.severity === 'error').length, 0);
   assert.ok(!checks.some(c => c.code === 'manual_edit'));
