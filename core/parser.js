@@ -104,7 +104,8 @@ var PPParser = (function () {
     return sameLastName(x, y) && sameFirstName(x, y);
   }
   function nameSpelling(value) { return nameParts(value).words.slice().sort().join(' '); }
-  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else is unknown.
+  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else, such as
+  // Nonbinary, is kept as written and counted as neither.
   function genderOf(value) {
     var v = normalize(value);
     return v === 'm' || v === 'male' || v === 'boy' ? 'Male' : v === 'f' || v === 'female' || v === 'girl' ? 'Female' : null;
@@ -348,17 +349,16 @@ var PPParser = (function () {
         issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
       }
     });
-    var genders = {}, unread = 0;
+    var genders = {};
     (options.genders || []).forEach(function (g) {
       // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
-      var email = emailOf(g.email), gender = genderOf(g.gender);
+      var email = emailOf(g.email), gender = genderOf(g.gender) || text(g.gender);
       if (!email) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email or Student ID.')); return; }
-      // Never guess: anything but Male or Female leaves the student's gender unknown.
-      if (!gender) { unread++; return; }
+      // Never guess. A blank row is no gender on file; anything but Male or Female is kept as written.
+      if (!gender) return;
       if (!genders[email]) genders[email] = [];
       genders[email].push(gender);
     });
-    if (unread) issues.push(issue('GENDER_UNKNOWN_VALUE', 'info', unread + ' Gender row' + (unread === 1 ? ' is' : 's are') + ' blank or say something other than Male or Female, so ' + (unread === 1 ? 'that student counts' : 'those students count') + ' as unknown.'));
     var statusChanges = options.statusChanges || [];
     statusChanges.forEach(function (change) {
       var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
@@ -376,11 +376,18 @@ var PPParser = (function () {
       var values = unique(genders[s.id] || (s._sharedEmail ? [] : genders[s.email]) || []);
       if (s._sharedEmail && !genders[s.id] && genders[s.email]) issues.push(issue('GENDER_SHARED_EMAIL', 'warning', 'Gender was not used for this student because another student sent a form from the same email. Add a Gender row with this Student ID instead.', s.source, s.id));
       if (values.length === 1) s.gender = values[0];
-      if (values.length > 1) { s.issues.push('Conflicting supplied gender values; gender remains unknown.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
+      // Rows that disagree are all kept, so the student counts as neither Male nor Female.
+      if (values.length > 1) { s.gender = values.join(' / '); s.issues.push('The Gender tab lists this student with different values, so they are not counted as Male or Female.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
       delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus; delete s._sharedEmail;
       stats.byGrade[s.grade] = (stats.byGrade[s.grade] || 0) + 1;
       stats.byStatus[s.status] = (stats.byStatus[s.status] || 0) + 1;
     });
+    // Students who can be placed but aren't counted as Male or Female, in two kinds.
+    if ((options.genders || []).length) {
+      var placeable = kept.filter(function (s) { return s.status === 'eligible' || s.status === 'late'; });
+      var missing = placeable.filter(function (s) { return !s.gender; }).length, unlisted = placeable.filter(function (s) { return s.gender && !genderOf(s.gender); }).length;
+      if (missing || unlisted) issues.push(issue('GENDER_NOT_COUNTED', 'info', 'Of the students who can be placed, ' + missing + (missing === 1 ? ' has' : ' have') + ' no gender on file and ' + unlisted + (unlisted === 1 ? ' is' : ' are') + ' not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+    }
     kept.sort(function (a,b) { return b.grade - a.grade || a.id.localeCompare(b.id); });
     stats.students = kept.length;
     return {students:kept, issues:issues, stats:stats};

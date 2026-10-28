@@ -189,10 +189,12 @@ test('status overrides require reason and unambiguous identity, and cannot mask 
   result=parser.prepare([t],projects,{statusChanges:[{email:r[1],status:'trip',why:'Confirmed trip list'}]}); assert.equal(result.students[0].status,'trip');
   result=parser.prepare([table([row('','Example, Missing')])],projects,{statusChanges:[{name:'Example, Missing',status:'eligible',why:'Try to force placement'}]}); assert.equal(result.students[0].status,'review');
 });
-test('gender only from supplied map; conflicting values remain unknown',()=>{
+test('gender only from supplied map; conflicting values are kept, so the student counts as neither Male nor Female',()=>{
   const r=row(); assert.equal(parser.prepare([table([r])],projects).students[0].gender,null);
   const result=parser.prepare([table([r])],projects,{genders:[{email:r[1],gender:'F'},{email:r[1],gender:'M'}]});
-  assert.equal(result.students[0].gender,null); assert.ok(result.issues.some(i=>i.code==='CONFLICTING_GENDER'));
+  assert.equal(result.students[0].gender,'Female / Male'); assert.ok(result.issues.some(i=>i.code==='CONFLICTING_GENDER'));
+  assert.equal(engine.check(result.students,[{...projects[0],finalLength:'Major'}],[{studentId:r[1],status:'placed',project1:'robotics',project2:null,fit1:1,fit2:null}],{},{}).filter(c=>c.code==='GENDER_BALANCE').length,0);
+  assert.ok(!result.students[0].issues.concat(result.issues.map(i=>i.message)).some(m=>/unknown/i.test(m)));
 });
 test('status override cannot bypass a required preference, and an unread prior project needs no override',()=>{
   const a=row(); a[3]='Unrecognized historical project';
@@ -223,12 +225,13 @@ test('malformed dates and preferences enter review rather than fabricated eligib
 test('goal vocabulary accepts recorded spelling variants and canonical numeric lists',()=>{
   assert.deepEqual(parser.canonicalGoals(['Good Health','Reduced Inequalties','3, 12','Gender Equality']),['3','10','12','5']);
 });
-test('gender reads M, Male, Boy, F, Female and Girl in any case, and anything else is unknown',()=>{
+test('gender reads M, Male, Boy, F, Female and Girl in any case, keeps anything else as written, and a blank row is no gender on file',()=>{
   const rows=['M','male','BOY','f','Female','girl','Nonbinary',''].map((g,i)=>row('g'+i+'@example.org','Example, G'+i));
   const genders=['M','male','BOY','f','Female','girl','Nonbinary',''].map((g,i)=>({email:'g'+i+'@example.org',gender:g}));
   const result=parser.prepare([table(rows)],projects,{genders});
-  assert.deepEqual(rows.map((r,i)=>result.students.find(s=>s.email==='g'+i+'@example.org').gender),['Male','Male','Male','Female','Female','Female',null,null]);
-  assert.ok(result.issues.some(i=>i.code==='GENDER_UNKNOWN_VALUE'&&/^2 Gender rows are blank or say something other than Male or Female/.test(i.message)));
+  assert.deepEqual(rows.map((r,i)=>result.students.find(s=>s.email==='g'+i+'@example.org').gender),['Male','Male','Male','Female','Female','Female','Nonbinary',null]);
+  assert.deepEqual(result.issues.filter(i=>i.code==='GENDER_NOT_COUNTED').map(i=>i.message),['Of the students who can be placed, 1 has no gender on file and 1 is not listed as Male or Female. Neither is counted as Male or Female in the groups.']);
+  assert.ok(!result.issues.some(i=>/unknown/i.test(i.message)));
 });
 
 test('Celebration of Learning is read into celebration, keeping only the part before " - "',()=>{

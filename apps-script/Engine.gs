@@ -533,7 +533,8 @@ var PPEngine = (function () {
     // size, and the group that shrinks at or above the minimum. A change needs every rule above to
     // still hold, drops each student at most one step, and never leaves a student in fewer projects
     // they checked (nobody asked for it). The smallest total drop in fit goes first, then the change
-    // that drops seniors least, then tie order, a move before a swap. Unknown genders never move.
+    // that drops seniors least, then tie order, a move before a swap. Students not listed as Male or
+    // Female never move.
     if(move&&cfg.balanceGender){
       var gender={},count={},one=function(){return 1;};Object.keys(where).forEach(function(id){gender[id]=genderOf(byId[id].gender);});
       function lone(n){return n===1?2:n===2?1:0;}
@@ -712,9 +713,11 @@ var PPEngine = (function () {
     projects.forEach(function(p){var c=choiceFor(choices,p.id);if(c.run===false)out.push(note('PROJECT_DISABLED','error','Project is selected despite Run = FALSE.',{projectId:p.id}));if(c.length&&p.finalLength!==c.length)out.push(note('LENGTH_CHOICE_IGNORED','error','Selected length differs from the project choice.',{projectId:p.id}));projects.forEach(function(q){if(compare(p.id,q.id)<0&&conflicts(p.id,q.id,choices))out.push(note('PROJECT_CONFLICT','error','Projects cannot run together: '+p.name+' and '+q.name,{projectId:p.id}));});
       var weeks=p.finalLength==='Minor'?2:1;for(var w=0;w<weeks;w++){var list=members[p.id][w],extra={projectId:p.id,week:w+1},cap=limit(p,cfg,choices);if(list.length>cap)out.push(note('OVER_CAPACITY','error',p.name+' exceeds '+cap+' students in week '+(w+1)+'.',extra));if(list.length<cfg.minSize)out.push(note('UNDER_MINIMUM',c.mustRun===true?'warning':'error',p.name+' has '+list.length+' students in week '+(w+1)+'; minimum is '+cfg.minSize+(c.mustRun===true?' (must-run exception).':'.'),extra));
         // The gender rule: a group has no Male students or at least three, and no Female students or at
-        // least three. Unknown genders aren't counted, and the message says how many there are.
-        var male=0,female=0,unknown=0;list.forEach(function(s){var g=genderOf(s.gender);if(g==='Male')male++;else if(g==='Female')female++;else unknown++;});
-        if((male&&male<3)||(female&&female<3))gendered.push({alone:male===1||female===1,note:note('GENDER_BALANCE','warning',p.name+(weeks===2?', week '+(w+1):'')+': '+female+' Female and '+male+' Male students'+(unknown?' ('+unknown+' with unknown gender)':'')+'. '+(!cfg.balanceGender?'Gender balancing is turned off in Settings.':context&&context.afterSort?"We couldn't fix it without breaking another rule.":'Sort again to try to fix it.'),extra)});
+        // least three. Students not listed as Male or Female, and students with no gender on file,
+        // aren't counted, and the message says how many there are.
+        var male=0,female=0,unlisted=0,missing=0;list.forEach(function(s){var g=genderOf(s.gender);if(g==='Male')male++;else if(g==='Female')female++;else if(String(s.gender||'').trim())unlisted++;else missing++;});
+        var others=[unlisted?unlisted+' not listed as Male or Female':'',missing?missing+' with no gender on file':''].filter(Boolean);
+        if((male&&male<3)||(female&&female<3))gendered.push({alone:male===1||female===1,note:note('GENDER_BALANCE','warning',p.name+(weeks===2?', week '+(w+1):'')+': '+male+' Male and '+female+' Female students'+(others.length?' ('+others.join(', ')+')':'')+'. '+(!cfg.balanceGender?'Gender balancing is turned off in Settings.':context&&context.afterSort?"We couldn't fix it without breaking another rule.":'Sort again to try to fix it.'),extra)});
       }
     });
     // Groups with a single Male or a single Female student are listed first.

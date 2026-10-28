@@ -100,9 +100,9 @@ test('checker treats each Minor week separately and warns on partial gender data
   const rows=students.map(x=>({studentId:x.id,status:'placed',project1:'m1',project2:'m2',fit1:5,fit2:5}));
   const checks=E.check(students,projects,rows,config({maxSize:2,targetSize:2,minorProjects:2,minorMin:3,minorTarget:3,minorMax:3}),{});
   assert.equal(checks.filter(x=>x.code==='OVER_CAPACITY').length,2);assert.ok(checks.some(x=>x.code==='UNDER_MINIMUM'));
-  // Each week is still checked using the students whose gender is known, and says how many aren't.
+  // Each week is still checked using the students listed as Male or Female, and says how many aren't.
   // All three are in m1 in week 1 and m2 in week 2; the two empty groups have nothing to report.
-  assert.deepEqual(checks.filter(x=>x.code==='GENDER_BALANCE').map(x=>x.message),['m1, week 1: 1 Female and 1 Male students (1 with unknown gender). Gender balancing is turned off in Settings.','m2, week 2: 1 Female and 1 Male students (1 with unknown gender). Gender balancing is turned off in Settings.']);
+  assert.deepEqual(checks.filter(x=>x.code==='GENDER_BALANCE').map(x=>x.message),['m1, week 1: 1 Male and 1 Female students (1 with no gender on file). Gender balancing is turned off in Settings.','m2, week 2: 1 Male and 1 Female students (1 with no gender on file). Gender balancing is turned off in Settings.']);
 });
 
 test('240-student synthetic run is complete, bounded and reproducible',()=>{
@@ -537,7 +537,7 @@ const genderRun=(far=false)=>{
 const genderMessages=r=>r.checks.filter(c=>c.code==='GENDER_BALANCE').map(c=>c.message);
 test('a group with two Female students is fixed by a swap that costs each student one step at most',()=>{
   const {students,projects,cfg}=genderRun(),off=E.sort(students,projects,{...cfg,balanceGender:false},{});
-  assert.deepEqual(genderMessages(off),['a: 2 Female and 6 Male students. Gender balancing is turned off in Settings.']);
+  assert.deepEqual(genderMessages(off),['a: 6 Male and 2 Female students. Gender balancing is turned off in Settings.']);
   const r=E.sort(students,projects,cfg,{}),inA=r.assignments.filter(a=>a.project1==='a').map(a=>students.find(x=>x.id===a.studentId).gender);
   assert.equal(inA.filter(g=>g==='Female').length,3); assert.deepEqual(genderMessages(r),[]);
   const swapped=r.assignments.filter(a=>/Swapped with a student in another group to balance the groups\./.test(a.reason));
@@ -547,15 +547,15 @@ test('a group with two Female students is fixed by a swap that costs each studen
 test('a gender fix that would cost two steps is refused and the group is reported',()=>{
   const {students,projects,cfg}=genderRun(true),r=E.sort(students,projects,cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,projects,{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 2 Female and 6 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 6 Male and 2 Female students. We couldn't fix it without breaking another rule."]);
 });
-test('students with unknown gender never move for gender, and with balanceGender FALSE the groups match a run without gender data',()=>{
+test('students not listed as Male or Female never move for gender, and with balanceGender FALSE the groups match a run without gender data',()=>{
   const {students,projects,cfg}=genderRun(),mixed=students.map((x,i)=>i%4===3?{...x,gender:'Unknown'}:x);
   const on=E.sort(mixed,projects,cfg,{}),off=E.sort(mixed,projects,{...cfg,balanceGender:false},{}),none=E.sort(mixed.map(x=>({...x,gender:null})),projects,{...cfg,balanceGender:false},{});
   for(const x of mixed.filter(x=>x.gender==='Unknown'))assert.equal(on.assignments.find(a=>a.studentId===x.id).project1,off.assignments.find(a=>a.studentId===x.id).project1);
   assert.ok(on.assignments.some((a,i)=>a.project1!==off.assignments[i].project1));
   assert.deepEqual(off.assignments,none.assignments);
-  assert.ok(genderMessages(off).length>0 && genderMessages(off).every(m=>/\(\d+ with unknown gender\)\. Gender balancing is turned off in Settings\.$/.test(m)));
+  assert.ok(genderMessages(off).length>0 && genderMessages(off).every(m=>/\(\d+ not listed as Male or Female\)\. Gender balancing is turned off in Settings\.$/.test(m)));
 });
 
 // Students who each checked one project, so each project's score is set by how many checked it.
@@ -673,7 +673,7 @@ test('a gender swap never moves a student out of a project they checked into one
   const students=[...Array.from({length:8},(_,i)=>s('a'+i,{types:['heart'],goals:['7'],gender:i<2?'Female':'Male'})),...Array.from({length:8},(_,i)=>s('b'+i,{choices:['b','z'],gender:i<5?'Female':'Male'}))];
   const r=E.sort(students,projects,cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,projects,{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 2 Female and 6 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 6 Male and 2 Female students. We couldn't fix it without breaking another rule."]);
   // A group with exactly one Male or one Female student comes before other broken groups.
   const majors=[{...p('a'),finalLength:'Major'},{...p('b'),finalLength:'Major'}],group=(id,f,m)=>[...Array(f).fill('Female'),...Array(m).fill('Male')].map((g,i)=>s(id+i,{gender:g}));
   const people=[...group('a',2,4),...group('b',5,1)],rows=people.map(x=>({studentId:x.id,status:'placed',project1:x.id[0],project2:null,fit1:1,fit2:null}));
@@ -692,7 +692,7 @@ test('a group with one Female student gets to three by swaps, because going from
   // cF0 checked a, and aM0 checked b and aM1 checked c.
   const students=[...team('a',1,7,{aM0:'b',aM1:'c'}),...team('b',4,4,{bF0:'a'}),...team('c',4,4,{cF0:'a'})];
   const cfg=config({minSize:4,targetSize:8,maxSize:8,projectCount:3,balanceGender:true}),off=E.sort(students,genderProjects(3),{...cfg,balanceGender:false},{});
-  assert.deepEqual(genderMessages(off),['a: 1 Female and 7 Male students. Gender balancing is turned off in Settings.']);
+  assert.deepEqual(genderMessages(off),['a: 7 Male and 1 Female students. Gender balancing is turned off in Settings.']);
   const r=E.sort(students,genderProjects(3),cfg,{});
   assert.equal(femaleIn(r,students,'a'),3); assert.deepEqual(genderMessages(r),[]);
   assert.deepEqual(['aM0','aM1','bF0','cF0'].map(id=>spot(r,id).project1),['b','c','a','a']);
@@ -716,7 +716,7 @@ test('a gender move never takes a group without a Max size above 12, or a group 
   let students=[...team('a',1,11),...team('b',6,6,{bF0:'a',bF1:'a'})],cfg=config({minSize:4,targetSize:8,maxSize:14,balanceGender:true});
   let r=E.sort(students,genderProjects(2),cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 1 Female and 11 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 11 Male and 1 Female students. We couldn't fix it without breaking another rule."]);
   // With a Max size of 14, a may grow to it.
   r=E.sort(students,genderProjects(2),cfg,{a:{maxSize:14}});
   assert.deepEqual([femaleIn(r,students,'a'),groupSize(r,'a'),spot(r,'bF0').project1,spot(r,'bF1').project1],[3,14,'a','a']);
@@ -732,7 +732,7 @@ test('a swap or move that takes one group from three Female students to two, to 
   const cfg=config({minSize:4,targetSize:8,maxSize:14,balanceGender:true});
   let students=[...team('a',1,7,{aM0:'b'}),...team('b',3,5,{bF0:'a'})],r=E.sort(students,genderProjects(2),cfg,{});
   assert.deepEqual(r.assignments,E.sort(students,genderProjects(2),{...cfg,balanceGender:false},{}).assignments);
-  assert.deepEqual(genderMessages(r),["a: 1 Female and 7 Male students. We couldn't fix it without breaking another rule."]);
+  assert.deepEqual(genderMessages(r),["a: 7 Male and 1 Female students. We couldn't fix it without breaking another rule."]);
   // With four Female students in b the total goes down, and bF0 moves.
   students=[...team('a',1,7,{aM0:'b'}),...team('b',4,4,{bF0:'a'})];r=E.sort(students,genderProjects(2),cfg,{});
   assert.deepEqual([spot(r,'bF0').project1,spot(r,'aM0').project1],['a','a']);
@@ -910,4 +910,15 @@ test('for a Minor student the sentence goes with the week of the project they di
     assert.match(missed,/^(Week 1: )?Did not check this project;.*\. Their other picks were full\.$/);
     assert.doesNotMatch(kept,/full|running|last year/);
   }
+});
+
+test('a student listed as Nonbinary counts as neither Male nor Female, never moves for gender and is never called unknown; one with no Gender row has no gender on file',()=>{
+  // In a, a0 and a1 are Female and a2 is listed as Nonbinary. In b, b7 has no gender on file, which
+  // leaves b two Male students.
+  const {students,projects,cfg}=genderRun(),mixed=students.map(x=>x.id==='a2'?{...x,gender:'Nonbinary'}:x.id==='b7'?{...x,gender:null}:x);
+  const on=E.sort(mixed,projects,cfg,{}),off=E.sort(mixed,projects,{...cfg,balanceGender:false},{});
+  assert.deepEqual(genderMessages(off),['a: 5 Male and 2 Female students (1 not listed as Male or Female). Gender balancing is turned off in Settings.','b: 2 Male and 5 Female students (1 with no gender on file). Gender balancing is turned off in Settings.']);
+  assert.ok(on.assignments.some(a=>/balance the groups/.test(a.reason)));
+  assert.equal(spot(on,'a2').project1,spot(off,'a2').project1); assert.doesNotMatch(spot(on,'a2').reason,/balance the groups/);
+  assert.ok(on.checks.concat(off.checks).every(c=>!/unknown/i.test(c.message)));
 });

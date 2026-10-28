@@ -711,7 +711,8 @@ var PPParser = (function () {
     return sameLastName(x, y) && sameFirstName(x, y);
   }
   function nameSpelling(value) { return nameParts(value).words.slice().sort().join(' '); }
-  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else is unknown.
+  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else, such as
+  // Nonbinary, is kept as written and counted as neither.
   function genderOf(value) {
     var v = normalize(value);
     return v === 'm' || v === 'male' || v === 'boy' ? 'Male' : v === 'f' || v === 'female' || v === 'girl' ? 'Female' : null;
@@ -955,17 +956,16 @@ var PPParser = (function () {
         issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
       }
     });
-    var genders = {}, unread = 0;
+    var genders = {};
     (options.genders || []).forEach(function (g) {
       // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
-      var email = emailOf(g.email), gender = genderOf(g.gender);
+      var email = emailOf(g.email), gender = genderOf(g.gender) || text(g.gender);
       if (!email) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email or Student ID.')); return; }
-      // Never guess: anything but Male or Female leaves the student's gender unknown.
-      if (!gender) { unread++; return; }
+      // Never guess. A blank row is no gender on file; anything but Male or Female is kept as written.
+      if (!gender) return;
       if (!genders[email]) genders[email] = [];
       genders[email].push(gender);
     });
-    if (unread) issues.push(issue('GENDER_UNKNOWN_VALUE', 'info', unread + ' Gender row' + (unread === 1 ? ' is' : 's are') + ' blank or say something other than Male or Female, so ' + (unread === 1 ? 'that student counts' : 'those students count') + ' as unknown.'));
     var statusChanges = options.statusChanges || [];
     statusChanges.forEach(function (change) {
       var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
@@ -983,11 +983,18 @@ var PPParser = (function () {
       var values = unique(genders[s.id] || (s._sharedEmail ? [] : genders[s.email]) || []);
       if (s._sharedEmail && !genders[s.id] && genders[s.email]) issues.push(issue('GENDER_SHARED_EMAIL', 'warning', 'Gender was not used for this student because another student sent a form from the same email. Add a Gender row with this Student ID instead.', s.source, s.id));
       if (values.length === 1) s.gender = values[0];
-      if (values.length > 1) { s.issues.push('Conflicting supplied gender values; gender remains unknown.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
+      // Rows that disagree are all kept, so the student counts as neither Male nor Female.
+      if (values.length > 1) { s.gender = values.join(' / '); s.issues.push('The Gender tab lists this student with different values, so they are not counted as Male or Female.'); issues.push(issue('CONFLICTING_GENDER', 'warning', 'Conflicting gender entries need review.', s.source)); }
       delete s._time; delete s._nameKey; delete s._invalid; delete s._blocked; delete s._colorStatus; delete s._sharedEmail;
       stats.byGrade[s.grade] = (stats.byGrade[s.grade] || 0) + 1;
       stats.byStatus[s.status] = (stats.byStatus[s.status] || 0) + 1;
     });
+    // Students who can be placed but aren't counted as Male or Female, in two kinds.
+    if ((options.genders || []).length) {
+      var placeable = kept.filter(function (s) { return s.status === 'eligible' || s.status === 'late'; });
+      var missing = placeable.filter(function (s) { return !s.gender; }).length, unlisted = placeable.filter(function (s) { return s.gender && !genderOf(s.gender); }).length;
+      if (missing || unlisted) issues.push(issue('GENDER_NOT_COUNTED', 'info', 'Of the students who can be placed, ' + missing + (missing === 1 ? ' has' : ' have') + ' no gender on file and ' + unlisted + (unlisted === 1 ? ' is' : ' are') + ' not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+    }
     kept.sort(function (a,b) { return b.grade - a.grade || a.id.localeCompare(b.id); });
     stats.students = kept.length;
     return {students:kept, issues:issues, stats:stats};
@@ -1559,7 +1566,8 @@ var PPEngine = (function () {
     // size, and the group that shrinks at or above the minimum. A change needs every rule above to
     // still hold, drops each student at most one step, and never leaves a student in fewer projects
     // they checked (nobody asked for it). The smallest total drop in fit goes first, then the change
-    // that drops seniors least, then tie order, a move before a swap. Unknown genders never move.
+    // that drops seniors least, then tie order, a move before a swap. Students not listed as Male or
+    // Female never move.
     if(move&&cfg.balanceGender){
       var gender={},count={},one=function(){return 1;};Object.keys(where).forEach(function(id){gender[id]=genderOf(byId[id].gender);});
       function lone(n){return n===1?2:n===2?1:0;}
@@ -1738,9 +1746,11 @@ var PPEngine = (function () {
     projects.forEach(function(p){var c=choiceFor(choices,p.id);if(c.run===false)out.push(note('PROJECT_DISABLED','error','Project is selected despite Run = FALSE.',{projectId:p.id}));if(c.length&&p.finalLength!==c.length)out.push(note('LENGTH_CHOICE_IGNORED','error','Selected length differs from the project choice.',{projectId:p.id}));projects.forEach(function(q){if(compare(p.id,q.id)<0&&conflicts(p.id,q.id,choices))out.push(note('PROJECT_CONFLICT','error','Projects cannot run together: '+p.name+' and '+q.name,{projectId:p.id}));});
       var weeks=p.finalLength==='Minor'?2:1;for(var w=0;w<weeks;w++){var list=members[p.id][w],extra={projectId:p.id,week:w+1},cap=limit(p,cfg,choices);if(list.length>cap)out.push(note('OVER_CAPACITY','error',p.name+' exceeds '+cap+' students in week '+(w+1)+'.',extra));if(list.length<cfg.minSize)out.push(note('UNDER_MINIMUM',c.mustRun===true?'warning':'error',p.name+' has '+list.length+' students in week '+(w+1)+'; minimum is '+cfg.minSize+(c.mustRun===true?' (must-run exception).':'.'),extra));
         // The gender rule: a group has no Male students or at least three, and no Female students or at
-        // least three. Unknown genders aren't counted, and the message says how many there are.
-        var male=0,female=0,unknown=0;list.forEach(function(s){var g=genderOf(s.gender);if(g==='Male')male++;else if(g==='Female')female++;else unknown++;});
-        if((male&&male<3)||(female&&female<3))gendered.push({alone:male===1||female===1,note:note('GENDER_BALANCE','warning',p.name+(weeks===2?', week '+(w+1):'')+': '+female+' Female and '+male+' Male students'+(unknown?' ('+unknown+' with unknown gender)':'')+'. '+(!cfg.balanceGender?'Gender balancing is turned off in Settings.':context&&context.afterSort?"We couldn't fix it without breaking another rule.":'Sort again to try to fix it.'),extra)});
+        // least three. Students not listed as Male or Female, and students with no gender on file,
+        // aren't counted, and the message says how many there are.
+        var male=0,female=0,unlisted=0,missing=0;list.forEach(function(s){var g=genderOf(s.gender);if(g==='Male')male++;else if(g==='Female')female++;else if(String(s.gender||'').trim())unlisted++;else missing++;});
+        var others=[unlisted?unlisted+' not listed as Male or Female':'',missing?missing+' with no gender on file':''].filter(Boolean);
+        if((male&&male<3)||(female&&female<3))gendered.push({alone:male===1||female===1,note:note('GENDER_BALANCE','warning',p.name+(weeks===2?', week '+(w+1):'')+': '+male+' Male and '+female+' Female students'+(others.length?' ('+others.join(', ')+')':'')+'. '+(!cfg.balanceGender?'Gender balancing is turned off in Settings.':context&&context.afterSort?"We couldn't fix it without breaking another rule.":'Sort again to try to fix it.'),extra)});
       }
     });
     // Groups with a single Male or a single Female student are listed first.

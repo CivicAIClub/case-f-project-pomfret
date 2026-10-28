@@ -821,3 +821,20 @@ test('PP Not placed lists every student who isn\'t placed and why, with a trip\'
   assert.ok(!f.sheets.get('PP Input check').data.some(r => r[1] === 'DESTINATION_NOT_TRIP' && /Rivera/.test(r[2])));
   assert.ok(!blocks(f.sheets.get('PP Master list'), v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v)).flatMap(s => s.rows).some(r => r[0] === 'Rivera, Sam'));
 });
+
+test('a Gender row saying Nonbinary reaches the sheet as written: counted as neither in PP Projects, two counts in PP Input check, and never "unknown"', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare();
+  const rows = f.sheets.get('PP Students').data.slice(1), gender = f.sheets.get('Gender').data;
+  // Every student but the last has a row: the first says Nonbinary, the rest alternate.
+  rows.slice(0, -1).forEach((r, i) => gender.push([r[2], i ? (i % 2 ? 'Female' : 'Male') : 'Nonbinary']));
+  f.adapter.sort('Gender wording');
+  const run = saved(f), first = rows[0][0], a = run.assignments.get(first);
+  assert.equal(run.students.get(first).gender, 'Nonbinary');
+  assert.equal(f.sheets.get('PP Students').data.find(r => r[0] === first)[10], 'Nonbinary');
+  const input = f.sheets.get('PP Input check').data;
+  assert.ok(input.some(r => r[1] === 'GENDER_NOT_COUNTED' && r[2] === 'Of the students who can be placed, 1 has no gender on file and 1 is not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+  const p = run.projects.find(x => x.id === a.project1), row = f.sheets.get('PP Projects').data.find(r => r[1] === label(p));
+  const split = v => String(v).split(' / ').map(Number), sizes = p.finalLength === 'Minor' ? [row[4], row[5]] : [row[4]];
+  assert.equal(split(row[6])[0] + split(row[7])[0], sizes[0] - 1 - (run.assignments.get(rows[rows.length - 1][0]).project1 === p.id ? 1 : 0));
+  for (const tab of ['PP Check', 'PP Input check']) assert.ok(!f.sheets.get(tab).data.some(r => /unknown/i.test(String(r[2]))), tab);
+});
