@@ -355,7 +355,7 @@ var PPEngine = (function () {
   // with a classmate, wherever every rule still holds. Locked students and leaders never move. With
   // move false it only reports where each request stands, for Check again.
   function arrange(students,projects,assignments,cfg,choices,run,requests,move){
-    var byId={},project={},where={},track={},size={},fixed={},notes={},why={},joined=[],apart=[],stuck={},priority=priorityOrder(run);
+    var byId={},project={},where={},track={},size={},fixed={},notes={},why={},joined=[],apart=[],stuck={};
     students.forEach(function(s){byId[s.id]=s;});projects.forEach(function(p){project[p.id]=p;});
     assignments.forEach(function(a){
       var one=project[a.project1],two=project[a.project2];
@@ -400,19 +400,18 @@ var PPEngine = (function () {
       return stop;
     }
     var any=function(){return Infinity;};
-    // "Not with" is a hard rule. Move whichever student loses less fit to their best other group;
-    // on a tie, the one placed later. This may cost more than one step, so the move is flagged.
+    // "Not with" is a hard rule. The student who wrote the request moves to their best other group,
+    // even when moving the classmate would cost less. Only when the writer is locked or leading does
+    // the classmate move instead. The move may cost more than one step, so it is flagged.
     if(move)requests.filter(function(q){return q.kind==='Not with';}).forEach(function(q){
+      var mover=!fixed[q.from]?q.from:!fixed[q.to]?q.to:null;
       for(var round=0;round<2&&together(q.from,q.to);round++){
-        var shared=groupsOf(q.from).filter(function(g){return groupsOf(q.to).indexOf(g)>=0;})[0];
-        var best=[q.from,q.to].map(function(id){
-          var w=track[id]==='Major'?0:Number(shared.split('|')[1]),here=where[id][w];
-          return projects.filter(function(p){return p.finalLength===track[id]&&p.id!==here;}).map(function(p){return {id:id,w:w,to:p.id,loss:tier(id,p.id)-tier(id,here)};}).sort(function(a,b){return a.loss-b.loss||compare(a.to,b.to);}).filter(function(o){return !attempt([o],any,false,true);})[0]||null;
-        });
-        var pick=!best[0]||!best[1]?best[0]||best[1]:best[0].loss!==best[1].loss?(best[0].loss<best[1].loss?best[0]:best[1]):priority(byId[q.from],byId[q.to])>0?best[0]:best[1];
-        if(!pick){stuck[q.line.row]=fixed[q.from]||fixed[q.to]||'Could not be moved apart without breaking another rule';break;}
+        if(!mover){stuck[q.line.row]=fixed[q.from];break;}
+        var shared=groupsOf(q.from).filter(function(g){return groupsOf(q.to).indexOf(g)>=0;})[0],w=track[mover]==='Major'?0:Number(shared.split('|')[1]),here=where[mover][w];
+        var pick=projects.filter(function(p){return p.finalLength===track[mover]&&p.id!==here;}).map(function(p){return {id:mover,w:w,to:p.id,loss:tier(mover,p.id)-tier(mover,here)};}).sort(function(a,b){return a.loss-b.loss||compare(a.to,b.to);}).filter(function(o){return !attempt([o],any,false,true);})[0];
+        if(!pick){stuck[q.line.row]='Could not be moved apart without breaking another rule';break;}
         attempt([pick],any,false,false);apart.push(q);
-        remark(pick.id,'flags','Moved to another group because of a "Not with" friend request. '+(pick.loss>0?'Fit dropped '+pick.loss+(pick.loss===1?' step.':' steps.'):'Fit did not drop.'));
+        remark(mover,'flags',mover!==q.from?'Moved because a classmate asked not to work with them.':'Moved to another group because of a "Not with" friend request. '+(pick.loss>0?'Fit dropped '+pick.loss+(pick.loss===1?' step.':' steps.'):'Fit did not drop.'));
       }
     });
     // The friend pass: pairs who named each other first, then seniors, juniors and sophomores in tie

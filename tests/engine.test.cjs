@@ -579,3 +579,26 @@ test('with friend requests on, no student without a "With" request of their own 
   assert.equal(big.summary.placed,36);
   assert.ok(big.friends.some(f=>f.why==='Moved to be together'));
 });
+
+test('"Not with" moves the student who wrote the request, and the classmate only when the writer is locked or leading',()=>{
+  // A and B share a, and b is full after one more. A fits a best and b worst; B fits both the same,
+  // so moving B would cost nothing and moving A costs five steps.
+  const students=[s('A',{grade:10,choices:['a','z']}),s('B',{grade:12,choices:['a','b'],goals:[]}),s('f1',{choices:['b','z'],goals:['9']}),s('f2',{choices:['b','z'],goals:['9']})];
+  const projects=[p('a'),p('b','Major',{goals:['9']})],cfg=config({maxSize:3,targetSize:2,useFriendRequests:true}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);
+  const plain=E.sort(students,projects,cfg,{});
+  assert.equal(at(plain,'A').project1,'a'); assert.equal(at(plain,'B').project1,'a');
+  const r=E.sort(students,projects,cfg,{},{friends:[ask('A','B','Not with')]});
+  assert.equal(at(r,'A').project1,'b'); assert.equal(at(r,'B').project1,'a');
+  assert.ok(at(r,'A').flags.includes('Moved to another group because of a "Not with" friend request. Fit dropped 5 steps.'));
+  assert.ok(!at(r,'B').flags.some(f=>/^Moved/.test(f)));
+  assert.deepEqual(r.friends.map(x=>[x.result,x.why]),[['Not together','Moved apart']]);
+  // A is locked, so B moves, with a flag that doesn't name A.
+  const locked=E.sort(students,projects,cfg,{},{locks:[{email:'A@example.org',name:'',project1:'a',project2:'',row:2}],friends:[ask('A','B','Not with')]});
+  assert.equal(at(locked,'A').project1,'a'); assert.equal(at(locked,'B').project1,'b');
+  assert.ok(at(locked,'B').flags.includes('Moved because a classmate asked not to work with them.'));
+  assert.deepEqual(locked.friends.map(x=>[x.result,x.why]),[['Not together','Moved apart']]);
+  // Both locked: reported as before.
+  const both=E.sort(students,projects,cfg,{},{locks:[{email:'A@example.org',name:'',project1:'a',project2:'',row:2},{email:'B@example.org',name:'',project1:'a',project2:'',row:3}],friends:[ask('A','B','Not with')]});
+  assert.deepEqual(both.friends.map(x=>[x.result,x.why]),[['Together','Locked in place by hand']]);
+  assert.ok(both.checks.some(c=>c.code==='NOT_WITH_TOGETHER'));
+});
