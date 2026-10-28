@@ -1011,7 +1011,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PPParser;
 // Generated from core/engine.js. Edit the core source and rebuild.
 /* Deterministic, local-only placement prototype. The cohort is selected before
  * optimization: Minor-preference students, then the Not-sure students who checked
- * the most running Minors, with friend requests keeping named pairs on one track. Within each Major/Minor cohort, the flow first keeps students
+ * the most running Minors. Within each Major/Minor cohort, the flow first keeps students
  * in projects they checked, seniors first, then improves fit. This does not guarantee
  * ordered grade means or a globally best cohort/project plan. Balanced quotas
  * are relaxed within the cap when needed; incomplete results are not proofs
@@ -1194,45 +1194,12 @@ var PPEngine = (function () {
     // Every Minor-preference student does Minors. Not-sure students who checked the most running
     // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
     // A leader follows their project's length whatever they asked for.
-    function notSure(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(run.last(a))-Number(run.last(b))||run.tie.students(a,b);}
-    function count(){return lockedMinor+minor.length;}
-    var minor=active.filter(function(s){return leading[s.id]&&leading[s.id].finalLength==='Minor';}).concat(free.filter(function(s){return s.preference==='Minor';}).sort(priority)),unknown=free.filter(function(s){return s.preference==='Not sure';}).sort(notSure),withs=cfg.useFriendRequests?arr(run.requests).filter(function(q){return q.kind==='With';}):[];
-    if(!withs.length)while(count()<desired&&unknown.length)minor.push(unknown.shift());
-    else friendTracks();
+    var minor=active.filter(function(s){return leading[s.id]&&leading[s.id].finalLength==='Minor';}).concat(free.filter(function(s){return s.preference==='Minor';}).sort(priority)),unknown=free.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(run.last(a))-Number(run.last(b))||run.tie.students(a,b);});
+    while(lockedMinor+minor.length<desired&&unknown.length)minor.push(unknown.shift());
     // Major-preference students move only while the Minor count is below its minimum.
-    if(cfg.allowMajorToMinor){var major=free.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(count()<minimum&&major.length)minor.push(major.shift());}
+    if(cfg.allowMajorToMinor){var major=free.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(lockedMinor+minor.length<minimum&&major.length)minor.push(major.shift());}
     var members={};minor.forEach(function(s){members[s.id]=true;});
     return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority),lockedMinor:lockedMinor,lockedMajor:lockedIds.filter(function(id){return locked[id].track==='Major';}).length};
-    // With friend requests on, Not-sure students who named each other in "With" requests share a track,
-    // ranked by whichever of them ranks first. A Not-sure student who named classmates whose track is
-    // set (they asked for a Major or Minors, or they're locked or leading) follows them; with classmates
-    // on both tracks, the ones who named them back count first, then the most classmates. Following may
-    // take the Minor count up to its maximum or down to its minimum, never past either, and pairs who
-    // named each other come first.
-    function friendTracks(){
-      var set={},byId={},unsure={},unitOf={},units=[],most=Math.max(upper,desired);
-      students.forEach(function(s){byId[s.id]=s;var t=locked[s.id]?locked[s.id].track:leading[s.id]?leading[s.id].finalLength:eligible(s)?s.preference:null;if(t==='Minor'||t==='Major')set[s.id]=t;});
-      unknown.forEach(function(s){unsure[s.id]=true;});
-      // unknown is in rank order, so each unit's first member ranks first and units come out in rank order.
-      unknown.forEach(function(s){
-        if(unitOf[s.id])return;
-        var unit={members:[s],named:{}},votes={Minor:[0,0],Major:[0,0]};unitOf[s.id]=unit;units.push(unit);
-        for(var i=0;i<unit.members.length;i++)withs.forEach(function(q){
-          var id=unit.members[i].id,other=q.from===id?q.to:q.mutual&&q.to===id?q.from:null;
-          if(other&&q.mutual&&unsure[other]&&!unitOf[other]){unitOf[other]=unit;unit.members.push(byId[other]);}
-          else if(other&&set[other])unit.named[other]=unit.named[other]||q.mutual;
-        });
-        Object.keys(unit.named).forEach(function(id){votes[set[id]][0]+=unit.named[id]?1:0;votes[set[id]][1]++;});
-        var d=votes.Minor[0]-votes.Major[0]||votes.Minor[1]-votes.Major[1];
-        unit.want=d>0?'Minor':d<0?'Major':null;unit.pair=unit.members.length>1;
-      });
-      function group(want,pair){return units.filter(function(u){return u.want===want&&u.pair===pair;});}
-      function room(u){return count()+u.members.length<=most;}
-      function take(u){u.taken=true;u.members.forEach(function(m){minor.push(m);});}
-      group('Minor',true).concat(group('Minor',false)).forEach(function(u){if(room(u))take(u);});
-      units.forEach(function(u){if(!u.taken&&!u.want&&count()<desired&&room(u))take(u);});
-      group('Major',false).concat(group('Major',true)).forEach(function(u){if(count()<minimum&&room(u))take(u);});
-    }
   }
   function quotas(count,projects,cfg,scores){
     var sorted=projects.slice().sort(function(a,b){return (scores[b.id]||0)-(scores[a.id]||0)||compare(a.id,b.id);}), result={};
@@ -1585,7 +1552,7 @@ var PPEngine = (function () {
     students.forEach(function(s){run.byId[s.id]=s;});projects.forEach(function(p){run.names[p.id]=p.name;});
     arr(context.previous).forEach(function(a){if(a&&run.byId[a.studentId])run.previous[a.studentId]={project1:a.project1||null,project2:a.project2||null};});
     var blocked=issues.some(function(x){return x.severity==='error';}),lockInfo=resolveLocks(students,projects,context.locks),lockProjects={},friends=resolveFriends(students,context.friends,cfg),arranged=null;
-    run.locks=lockInfo.byStudent;run.requests=friends.requests;issues=issues.concat(lockInfo.issues,friends.issues);
+    run.locks=lockInfo.byStudent;issues=issues.concat(lockInfo.issues,friends.issues);
     Object.keys(run.locks).forEach(function(id){[run.locks[id].project1,run.locks[id].project2].forEach(function(pid){if(pid)lockProjects[pid]=true;});});
     var assignments;
     if(blocked)assignments=students.map(emptyAssignment);

@@ -506,38 +506,6 @@ test('two Minor students who share a Minor in different weeks are joined by swit
   assert.equal(r.assignments.filter((a,i)=>a.project1!==before.assignments[i].project1).length,1);
 });
 
-test('with friend requests on, two Not-sure students who named each other go to the same track',()=>{
-  const track=(r,id)=>r.assignments.find(a=>a.studentId===id).project2?'Minor':'Major';
-  // Three students asked for Minors, so one Minor spot is left below the target. x checked all four
-  // Minors and y none, so without friend requests x does Minors and y a Major.
-  const projects=[p('a'),...['m1','m2','m3','m4'].map(id=>p(id,'Minor'))];
-  const students=[s('p1',{preference:'Minor',choices:['m1','m2']}),s('p2',{preference:'Minor',choices:['m3','m4']}),s('p3',{preference:'Minor',choices:['m1','m3']}),s('x',{preference:'Not sure',choices:['m1','m2','m3','m4']}),s('y',{preference:'Not sure',choices:['a','z']}),s('maj',{choices:['a','z']})];
-  const cfg=config({projectCount:5,minorProjects:4,minorMin:4,minorTarget:4,minorMax:5,maxSize:4,useFriendRequests:true}),pair=[ask('x','y'),ask('y','x','With',3)];
-  const off=E.sort(students,projects,{...cfg,useFriendRequests:false},{},{friends:pair}),on=E.sort(students,projects,cfg,{},{friends:pair});
-  assert.equal(track(off,'x'),'Minor'); assert.equal(track(off,'y'),'Major');
-  assert.deepEqual(off.assignments,E.sort(students,projects,{...cfg,useFriendRequests:false},{}).assignments);
-  assert.equal(track(on,'x'),track(on,'y'));
-  assert.ok(on.summary.minorStudents<=5);
-  assert.equal(errors(on).length,0);
-});
-
-test('with friend requests on, a Not-sure student who named a Major-preference classmate goes to Majors',()=>{
-  const track=(r,id)=>r.assignments.find(a=>a.studentId===id).project2?'Minor':'Major';
-  // z checked both Minors, so without friend requests z takes the last spot below the Minor target.
-  // The minimum is already met, so z can follow maj.
-  const projects=[p('a'),p('m1','Minor'),p('m2','Minor')];
-  const students=[s('p1',{preference:'Minor',choices:['m1','m2']}),s('p2',{preference:'Minor',choices:['m1','m2']}),s('z',{preference:'Not sure',choices:['m1','m2']}),s('maj')];
-  const cfg=config({projectCount:3,minorProjects:2,minorMin:2,minorTarget:3,minorMax:3,maxSize:4,useFriendRequests:true});
-  const off=E.sort(students,projects,{...cfg,useFriendRequests:false},{},{friends:[ask('z','maj')]}),on=E.sort(students,projects,cfg,{},{friends:[ask('z','maj')]});
-  assert.equal(track(off,'z'),'Minor');
-  assert.equal(track(on,'z'),'Major');
-  assert.equal(on.assignments.find(a=>a.studentId==='z').project1,on.assignments.find(a=>a.studentId==='maj').project1);
-  assert.equal(on.friends.find(f=>f.row===2).result,'Together');
-  // Never below the minimum: with a minimum of three, z still does Minors.
-  const full=E.sort(students,projects,{...cfg,minorMin:3},{},{friends:[ask('z','maj')]});
-  assert.equal(track(full,'z'),'Minor');
-});
-
 test('a locked student at fit 6 gets no fit-6 flag or LOW_FIT warning, and the reason gives the Why text',()=>{
   // L and M checked a and z, and b shares neither their Type nor their UN goal, so b is fit 6 for both.
   const projects=[p('a'),p('b','Major',{types:['feet'],goals:['9']})],students=[s('L'),s('M'),s('N'),s('O',{choices:['b','z'],types:['feet']}),s('Q',{choices:['b','z'],types:['feet']})],cfg=config({maxSize:4});
