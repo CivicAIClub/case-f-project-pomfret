@@ -193,6 +193,18 @@ test('document lock is released after a failed action', () => {
   assert.throws(() => f.context.PP_withLock(() => { throw new Error('expected'); }), /expected/);
   assert.equal(f.released(), 1);
 });
+test('PP Input check lists every hand-typed merge and every student with no response', () => {
+  const f = fixture(true); f.adapter.practice();
+  f.sheets.get('Senior').data.push(['', '', 'Student 001, Practice', '', '', '', '', '', ''], ['', '', 'Example, Nobody', '', '', '', '', '', '']);
+  const prepared = f.adapter.prepare(), nobody = prepared.students.find(s => s.name === 'Example, Nobody');
+  assert.equal(prepared.students.length, 241);
+  assert.equal(nobody.status, 'late');
+  const rows = f.sheets.get('PP Input check').data;
+  assert.ok(rows.some(r => r[0] === 'info' && r[1] === 'HAND_TYPED_MERGED' && r[3] === 'practice1@example.org' && r[6] === 'Senior:82'));
+  assert.ok(rows.some(r => r[0] === 'warning' && r[1] === 'NO_RESPONSE' && r[3] === nobody.id && r[6] === 'Senior:83'));
+  const result = f.adapter.sort('Hand-typed rows with invented students');
+  assert.equal(result.assignments.find(a => a.studentId === nobody.id).status, 'placed');
+});
 test('real core integration: practice data prepares, counts, sorts and rechecks through the adapter', () => {
   const f = fixture(true);
   f.adapter.practice();

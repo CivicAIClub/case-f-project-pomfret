@@ -189,7 +189,7 @@ var PPParser = (function () {
     options = options || {};
     if (!Array.isArray(tables) || !tables.length) throw new Error('No grade source tables were supplied.');
     if (!Array.isArray(projects) || !projects.length) throw new Error('No projects were supplied.');
-    var rows = [], issues = [], stats = {rawRows:0, students:0, droppedDuplicates:0, byGrade:{}, byStatus:{}, identityConflicts:0};
+    var rows = [], issues = [], stats = {rawRows:0, students:0, droppedDuplicates:0, mergedRows:0, byGrade:{}, byStatus:{}, identityConflicts:0};
     tables.forEach(function (table) {
       if (!table.values || !Array.isArray(table.values[0])) throw new Error('Missing header row in ' + text(table.name) + '.');
       var c;
@@ -286,6 +286,42 @@ var PPParser = (function () {
       });
       var latest = submissions.slice().sort(newestFirst)[0];
       if (latest && typed.length) { latest.status = 'review'; latest._invalid = true; latest.issues.push('A typed roster entry shares this email; reconcile the duplicate person before sorting.'); }
+    });
+    // Hand-typed rows have a name but no email or timestamp. Each one joins the one form
+    // in its grade with a matching name, or the last name alone if only one form has it.
+    var responses = kept.filter(function (s) { return s.email && s._time !== null; });
+    var handTyped = kept.filter(function (s) { return !s.email && s._time === null && s._nameKey; }).map(function (row) {
+      var sameGrade = responses.filter(function (s) { return s.grade === row.grade; });
+      var full = sameGrade.filter(function (s) { return sameName(row.name, s.name); });
+      var lastOnly = sameGrade.filter(function (s) { return sameLastName(nameParts(row.name), nameParts(s.name)); });
+      return {row:row, candidates:full.length ? full : lastOnly, lastOnly:!full.length};
+    });
+    var colorWords = {trip:'trip', leader:'freshman leader', late:'green'};
+    handTyped.forEach(function (match) {
+      var row = match.row, target = match.candidates.length === 1 ? match.candidates[0] : null, color = row._colorStatus;
+      var rivals = handTyped.filter(function (other) { return target && other.candidates.length === 1 && other.candidates[0] === target; }).length;
+      if (match.candidates.length > 1 || rivals > 1) {
+        // Never guess between students. A person decides.
+        row.status = 'review';
+        row.issues = [match.candidates.length > 1 ? 'More than one student matches this name.' : 'Another hand-typed row matches the same form. Check which student this is.'];
+        issues.push(issue('HAND_TYPED_UNCLEAR', 'warning', 'The hand-typed row "' + row.name + '" could be more than one student, so it is in review.', row.source, row.id));
+      } else if (target) {
+        // The row's status color wins. A form still missing required answers stays in review.
+        if (color && !(color === 'late' && target.status === 'review')) target.status = color;
+        if (match.lastOnly) target.issues.push('Matched a hand-typed row by last name only. Check it\'s the same student.');
+        kept.splice(kept.indexOf(row), 1);
+        stats.mergedRows++;
+        issues.push(issue(match.lastOnly ? 'HAND_TYPED_LAST_NAME' : 'HAND_TYPED_MERGED', match.lastOnly ? 'warning' : 'info',
+          'Merged the hand-typed row "' + row.name + '" into the form from "' + target.name + '"' + (match.lastOnly ? ' by last name only. Check it\'s the same student.' : '.') + (color ? ' Its ' + colorWords[color] + ' color was used.' : ''), row.source, target.id));
+      } else if (row.status === 'trip' || row.status === 'leader') {
+        row.issues = [];
+        issues.push(issue('NO_RESPONSE', 'info', 'No form from "' + row.name + '". Kept as ' + colorWords[row.status] + ' and not placed.', row.source, row.id));
+      } else {
+        // The student did not fill out the form. Place them after everyone else.
+        row.status = 'late';
+        row.issues = ['No response: check.'];
+        issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
+      }
     });
     var genders = {};
     (options.genders || []).forEach(function (g) {

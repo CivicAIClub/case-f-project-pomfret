@@ -71,10 +71,58 @@ test('a shared email gender row is not guessed for either student; a Student ID 
   result=parser.prepare([t],projects,{statusChanges:[{email:'shared@example.org:example-avery',status:'trip',why:'Confirmed trip list'}]});
   assert.equal(result.students.find(s=>s.name==='Example, Avery').status,'trip');
 });
-test('non-email trip labels never deduplicate people; green missing email stays review',()=>{
+test('non-email trip labels never deduplicate people; an unmatched green row is late',()=>{
   const a=row('Trip label','Example, One',''), b=row('Trip label','Example, Two',''), c=row('','Example, Three','');
   const result=parser.prepare([table([a,b,c],11,{0:'#00ffff',1:'FF00FFFF',2:'#00ff00'})],projects);
-  assert.equal(result.students.length,3); assert.equal(result.stats.byStatus.trip,2); assert.equal(result.stats.byStatus.review,1);
+  assert.equal(result.students.length,3); assert.equal(result.stats.byStatus.trip,2); assert.equal(result.stats.byStatus.late,1);
+});
+const typed=name=>['','',name,'','','','','',''];
+test('hand-typed rows merge into the one form in their grade with a matching name',()=>{
+  const result=parser.prepare([table([row('jo@example.org','Jo Smith'),row('nick@example.org','Nicholas Doe'),typed('Smith, Jo'),typed('Doe, Nick')])],projects);
+  assert.deepEqual(result.students.map(s=>s.id).sort(),['jo@example.org','nick@example.org']); assert.equal(result.stats.mergedRows,2);
+  assert.ok(result.students.every(s=>s.status==='eligible' && !s.issues.some(x=>/hand-typed/.test(x))));
+  const merges=result.issues.filter(i=>i.code==='HAND_TYPED_MERGED');
+  assert.deepEqual(merges.map(i=>i.studentId).sort(),['jo@example.org','nick@example.org']); assert.ok(merges.every(i=>i.severity==='info'));
+  // Odd spacing and capitals still match.
+  assert.equal(parser.prepare([table([row('jo@example.org','Jo Smith'),typed('  SMITH ,jo ')])],projects).students.length,1);
+});
+test('a hand-typed status color wins over the form it merges into',()=>{
+  const trip=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo')],12,{1:'#00ffff'})],projects);
+  assert.equal(trip.students.length,1); assert.equal(trip.students[0].status,'trip');
+  const green=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo')],12,{1:'#00ff00'})],projects);
+  assert.equal(green.students[0].status,'late'); assert.match(green.issues.find(i=>i.code==='HAND_TYPED_MERGED').message,/green color was used/);
+  const plain=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo')],12,{0:'#ff9900'})],projects);
+  assert.equal(plain.students[0].status,'leader');
+});
+test('a hand-typed row matching only one last name in its grade merges with a flag',()=>{
+  const result=parser.prepare([table([row('chris@example.org','Lee, Chris'),row('jo@example.org','Jo Smith'),typed('Lee, Pat')],12),table([row('morgan@example.org','Lee, Morgan')],11)],projects);
+  assert.equal(result.students.length,3); assert.equal(result.stats.mergedRows,1);
+  assert.ok(result.students.find(s=>s.id==='chris@example.org').issues.includes('Matched a hand-typed row by last name only. Check it\'s the same student.'));
+  assert.ok(result.issues.some(i=>i.code==='HAND_TYPED_LAST_NAME' && i.severity==='warning' && i.studentId==='chris@example.org'));
+});
+test('unmatched hand-typed rows become late with a flag, while trip colors stay trips',()=>{
+  const result=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Example, Quinn'),typed('Example, Blue')],12,{2:'#00ffff'})],projects);
+  const quinn=result.students.find(s=>s.name==='Example, Quinn'), blue=result.students.find(s=>s.name==='Example, Blue');
+  assert.equal(quinn.status,'late'); assert.deepEqual(quinn.issues,['No response: check.']);
+  assert.equal(blue.status,'trip'); assert.deepEqual(blue.issues,[]);
+  assert.ok(result.issues.some(i=>i.code==='NO_RESPONSE' && i.severity==='warning' && i.studentId===quinn.id));
+  assert.ok(result.issues.some(i=>i.code==='NO_RESPONSE' && i.severity==='info' && i.studentId===blue.id));
+  const run=engine.sort(result.students,projects,smallRun,{}), at=id=>run.assignments.find(a=>a.studentId===id);
+  assert.equal(at(quinn.id).status,'placed'); assert.ok(at(quinn.id).flags.some(x=>/after everyone else/.test(x)));
+  assert.equal(at(blue.id).status,'excluded');
+});
+test('a hand-typed row that could be more than one student goes to review',()=>{
+  const result=parser.prepare([table([row('sam@example.org','Kim, Sam'),row('samuel@example.org','Samuel Kim'),typed('Kim, Sam'),typed('Kim, Pat')])],projects);
+  assert.equal(result.students.length,4); assert.equal(result.stats.mergedRows,0);
+  for (const name of ['Kim, Sam','Kim, Pat']) {
+    const s=result.students.find(x=>!x.email && x.name===name);
+    assert.equal(s.status,'review'); assert.deepEqual(s.issues,['More than one student matches this name.']);
+  }
+  assert.equal(result.students.filter(s=>s.email && s.status==='eligible').length,2);
+  assert.equal(result.issues.filter(i=>i.code==='HAND_TYPED_UNCLEAR').length,2);
+  // Two hand-typed rows that both match one form are not merged either.
+  const twice=parser.prepare([table([row('jo@example.org','Jo Smith'),typed('Smith, Jo'),typed('Smith, Joanna')])],projects);
+  assert.equal(twice.students.length,3); assert.equal(twice.students.filter(s=>s.status==='review').length,2);
 });
 test('header matching handles reordered senior comments, choice blocks and leader text',()=>{
   const h=['Email Address','Timestamp','What is your Name? Please answer Last name, First name','Please choose the TYPE of Project you want','Would you prefer to do a MAJOR Project (2 weeks) or two MINOR Projects?','Please choose a UN Sustainable Development Goals','Would you like to be considered to serve as a student leader for Stories Matter?','Below are new Projects. Check ALL the Projects that you might be interested in joining.','Please share anything else you would like me to know','What Project(s) were you in last year?'];
