@@ -488,3 +488,20 @@ test('a gender swap never moves a student out of a project they checked into one
   const people=[...group('a',2,4),...group('b',5,1)],rows=people.map(x=>({studentId:x.id,status:'placed',project1:x.id[0],project2:null,fit1:1,fit2:null}));
   assert.deepEqual(E.check(people,majors,rows,config({minSize:1,maxSize:8}),{}).filter(c=>c.code==='GENDER_BALANCE').map(c=>c.message.split(':')[0]),['b','a']);
 });
+
+test('two Minor students who share a Minor in different weeks are joined by switching one student\'s weeks, with the same fits',()=>{
+  const projects=[p('glass','Minor',{name:'Glass Fusing'}),p('larp','Minor',{name:'LARP',goals:['9']}),p('cooking','Minor',{name:'Cooking'})];
+  const cfg=config({projectCount:3,minorProjects:3,minorMin:6,minorTarget:6,minorMax:6,maxSize:3,useFriendRequests:true});
+  // A: Glass Fusing then LARP. B: LARP then Cooking. Last run's weeks keep everyone's weeks as listed.
+  const plan={A:['glass','larp'],f1:['larp','glass'],B:['larp','cooking'],f2:['cooking','larp'],f3:['glass','cooking'],f4:['cooking','glass']};
+  const students=Object.keys(plan).map(id=>s(id,{preference:'Minor',choices:plan[id].slice()}));
+  const previous=Object.keys(plan).map(id=>({studentId:id,project1:plan[id][0],project2:plan[id][1]}));
+  const before=E.sort(students,projects,cfg,{},{previous}),r=E.sort(students,projects,cfg,{},{previous,friends:[ask('A','B')]});
+  const at=(x,id)=>x.assignments.find(a=>a.studentId===id);
+  assert.deepEqual([at(before,'A').project1,at(before,'A').project2,at(before,'B').project1,at(before,'B').project2],['glass','larp','larp','cooking']);
+  assert.ok(['project1','project2'].some(k=>at(r,'A')[k]==='larp'&&at(r,'B')[k]==='larp'));
+  for(const id of ['A','B'])assert.deepEqual([at(r,id).fit1,at(r,id).fit2].sort(),[at(before,id).fit1,at(before,id).fit2].sort());
+  assert.match(at(r,'A').reason+at(r,'B').reason,/Switched weeks to be with Practice [AB], who (they asked to work with|asked to work with them)\./);
+  assert.deepEqual(r.friends.map(x=>[x.result,x.why]),[['Together','Moved to be together']]);
+  assert.equal(r.assignments.filter((a,i)=>a.project1!==before.assignments[i].project1).length,1);
+});

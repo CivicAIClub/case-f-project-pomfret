@@ -371,21 +371,26 @@ var PPEngine = (function () {
     function name(id){return byId[id].name||id;}
     function remark(id,kind,text){var n=notes[id]=notes[id]||{reason:[],flags:[]};n[kind].push(text);}
     // Make the changes if every rule still holds; otherwise undo them and say which rule stopped it.
-    // drop(id) is how many steps of fit that student may lose. A dry run always undoes.
+    // drop(id) is how many steps of fit that student may lose in all. The changes are judged together,
+    // so a student's two Minors can trade weeks. A dry run always undoes.
+    function tiers(id){return where[id].filter(Boolean).reduce(function(n,pid){return n+tier(id,pid);},0);}
     function attempt(changes,drop,keepMet,dry){
-      var ids=changes.map(function(c){return c.id;}),stop=null,undo=[],before={};
+      var ids=changes.map(function(c){return c.id;}).filter(function(id,i,all){return all.indexOf(id)===i;}),stop=null,undo=[],before={},fitBefore={};
       changes.some(function(c){
-        var w=track[c.id]==='Major'?0:c.w,from=where[c.id][w];
         if(fixed[c.id])stop=fixed[c.id];
         else if(!allowed(byId[c.id],project[c.to],choices))stop="Would put a student in last year's project";
-        else if(track[c.id]==='Minor'&&where[c.id][1-w]===c.to)stop='Would give a Minor student the same project twice';
-        else if(tier(c.id,c.to)-tier(c.id,from)>drop(c.id))stop=drop(c.id)>0?'Would drop more than one step in fit':'Would give another student a worse fit';
         return !!stop;
       });
       if(stop)return stop;
+      ids.forEach(function(id){fitBefore[id]=tiers(id);});
       var met=keepMet?involving(ids,'With').filter(function(q){return together(q.from,q.to);}):[],apartBefore=involving(ids,'Not with').filter(function(q){return !together(q.from,q.to);});
       changes.forEach(function(c){var w=track[c.id]==='Major'?0:c.w,old=group(c.id,w),now;undo.push({id:c.id,w:w,from:where[c.id][w]});if(!(old in before))before[old]=size[old];size[old]--;where[c.id][w]=c.to;now=group(c.id,w);if(!(now in before))before[now]=size[now]||0;size[now]=(size[now]||0)+1;});
-      Object.keys(before).some(function(g){var n=size[g]||0,p=project[g.split('|')[0]];if(n>before[g]&&n>limit(p,cfg,choices))stop='A group would go over the maximum';else if(n<before[g]&&n<cfg.minSize)stop='A group would go under the minimum';return !!stop;});
+      ids.some(function(id){
+        if(track[id]==='Minor'&&where[id][0]===where[id][1])stop='Would give a Minor student the same project twice';
+        else if(tiers(id)-fitBefore[id]>drop(id))stop=drop(id)>0?'Would drop more than one step in fit':'Would give another student a worse fit';
+        return !!stop;
+      });
+      if(!stop)Object.keys(before).some(function(g){var n=size[g]||0,p=project[g.split('|')[0]];if(n>before[g]&&n>limit(p,cfg,choices))stop='A group would go over the maximum';else if(n<before[g]&&n<cfg.minSize)stop='A group would go under the minimum';return !!stop;});
       if(!stop&&apartBefore.some(function(q){return together(q.from,q.to);}))stop='Would put a student with a classmate they asked not to work with';
       if(!stop&&met.some(function(q){return !together(q.from,q.to);}))stop='Would split up another friend request';
       if(stop||dry)undo.reverse().forEach(function(u){var g=group(u.id,u.w);size[g]--;where[u.id][u.w]=u.from;g=group(u.id,u.w);size[g]=(size[g]||0)+1;});
@@ -408,8 +413,8 @@ var PPEngine = (function () {
       }
     });
     // The friend pass: pairs who named each other first, then seniors, juniors and sophomores in tie
-    // order. Each student not yet with a classmate they named tries three changes and keeps the first
-    // that works.
+    // order. Each student not yet with a classmate they named first tries a week switch, then three
+    // changes, and keeps the first that works.
     var withs=requests.filter(function(q){return q.kind==='With';});
     function named(id){return withs.filter(function(q){return q.from===id;});}
     function mutual(id){return named(id).some(function(q){return q.mutual;});}
@@ -419,8 +424,15 @@ var PPEngine = (function () {
       var weeks=track[id]==='Major'?[0]:[0,1],first=null,done=null;
       function works(stop){if(stop&&!first)first=stop;return !stop;}
       function only(who){return function(x){return x===who?1:0;};}
+      // 0. Two Minor students who share a Minor in different weeks: one of them switches their two
+      // Minors between week 1 and week 2. Nobody's fit changes.
+      if(track[id]==='Minor')mine.some(function(q){
+        var mineNow=where[id],theirs=where[q.to];
+        if(!mineNow.some(function(pid,w){return theirs[1-w]===pid;}))return false;
+        return [id,q.to].some(function(who){return !attempt([{id:who,w:0,to:where[who][1]},{id:who,w:1,to:where[who][0]}],function(){return 0;},true,false)&&(done={mover:who,other:who===id?q.to:id,q:q,switched:true});});
+      });
       // 1. Move the student into a named classmate's group.
-      mine.some(function(q){return weeks.some(function(w){return works(attempt([{id:id,w:w,to:where[q.to][w]}],only(id),true,false))&&(done={mover:id,other:q.to,q:q});});});
+      if(!done)mine.some(function(q){return weeks.some(function(w){return works(attempt([{id:id,w:w,to:where[q.to][w]}],only(id),true,false))&&(done={mover:id,other:q.to,q:q});});});
       // 2. If they named each other, move the classmate into the student's group.
       if(!done)mine.filter(function(q){return q.mutual;}).some(function(q){return weeks.some(function(w){return works(attempt([{id:q.to,w:w,to:where[id][w]}],only(q.to),true,false))&&(done={mover:q.to,other:id,q:q});});});
       // 3. Swap the student with a third student in a named classmate's group, in the same week and track.
@@ -429,7 +441,9 @@ var PPEngine = (function () {
         return Object.keys(where).filter(function(t){return t!==id&&t!==q.to&&track[t]===track[id]&&where[t][w]===target;}).sort(run.tie.ids).some(function(t){return works(attempt([{id:id,w:w,to:target},{id:t,w:w,to:here}],only(id),true,false))&&(done={mover:id,other:q.to,q:q,third:t});});
       });});
       if(!done){why[id]=first;return;}
-      joined.push(done.q);withs.forEach(function(o){if(done.q.mutual&&o.from===done.q.to&&o.to===done.q.from)joined.push(o);});remark(done.mover,'reason','Moved to be with '+name(done.other)+', who they asked to work with.');
+      joined.push(done.q);withs.forEach(function(o){if(done.q.mutual&&o.from===done.q.to&&o.to===done.q.from)joined.push(o);});
+      var asked=done.mover===id||done.q.mutual;
+      remark(done.mover,'reason',(done.switched?'Switched weeks':'Moved')+' to be with '+name(done.other)+(asked?', who they asked to work with.':', who asked to work with them.'));
       if(done.third)remark(done.third,'reason','Swapped into this group so classmates who asked to work together could, with no worse fit.');
     });
     // Gender: fix groups that break the rule (no Male students or at least three, and the same for
