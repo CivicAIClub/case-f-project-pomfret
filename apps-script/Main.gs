@@ -192,6 +192,10 @@ var PPAdapter = (function () {
     var p = projects.filter(function (x) { return x.id === id; })[0];
     return p ? (p.finalLength === 'Minor' ? 'MIN-' : 'MAJ-') + p.name : id;
   }
+  function lengthOf(id, projects) {
+    var p = projects.filter(function (x) { return x.id === id; })[0];
+    return p ? p.finalLength : null;
+  }
   function masterName(grade) { return grade === 12 ? 'PP Senior' : grade === 11 ? 'PP Junior' : 'PP Sophomore'; }
   function output(input, result) {
     var studentsById = {}, assignmentsById = {};
@@ -200,7 +204,9 @@ var PPAdapter = (function () {
     [12, 11, 10].forEach(function (grade) {
       write(masterName(grade), MASTER_HEADERS, input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(a.project2, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
+        // Like the master list, a Major shows its MAJ- label in both columns.
+        var second = a.project2 || (lengthOf(a.project1, result.projects) === 'Major' ? a.project1 : null);
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(second, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
       }));
     });
     var oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); });
@@ -284,6 +290,8 @@ var PPAdapter = (function () {
       records(masterName(grade), MASTER_HEADERS, true).forEach(function (r) {
         var id = text(r['Student ID']), original = baseline[id], one = text(r['Project #1']), two = text(r['Project #2']);
         var a = { studentId: id, project1: one ? tokenMap[one] || one : null, project2: two ? tokenMap[two] || two : null, status: text(r.Status), reason: text(r.Reason), flags: [], fit1: null, fit2: null };
+        // A Major's Project #2 repeats its MAJ- label or is blank. Either way it is one project.
+        if (a.project2 === a.project1 && lengthOf(a.project1, state.projects) === 'Major') a.project2 = null;
         if (known[id] && known[id].grade !== grade) checks.push({ severity: 'error', code: 'wrong_grade_tab', studentId: id, message: 'Student appears in the wrong grade master.' });
         if (one && !tokenMap[one] || two && !tokenMap[two]) checks.push({ severity: 'error', code: 'unknown_project_token', studentId: id, message: 'Project #1 or #2 does not exactly match a running MAJ-/MIN- project label.' });
         ['project1', 'project2'].forEach(function (key, i) {

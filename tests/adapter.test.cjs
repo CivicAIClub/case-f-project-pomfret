@@ -45,6 +45,19 @@ function fixture(useRealCore = false) {
   }
   return { adapter, sheets, catalog, context, source, engine, checked: () => checkedAssignments, released: () => released };
 }
+function saved(f) {
+  const run = { students: new Map(), assignments: new Map(), projects: [] };
+  for (const [kind, key, json] of f.sheets.get('PP Run snapshot').data.slice(1)) {
+    const value = JSON.parse(json);
+    if (kind === 'student') run.students.set(key, value);
+    if (kind === 'assignment') run.assignments.set(key, value);
+    if (kind === 'project') run.projects.push(value);
+    if (kind === 'settings') run.settings = value;
+    if (kind === 'choices') run.choices = value;
+  }
+  return run;
+}
+const GRADE_TABS = ['PP Senior', 'PP Junior', 'PP Sophomore'];
 test('setup preserves existing source, settings and project decisions', () => {
   const f = fixture(); f.source(); f.adapter.setup();
   f.sheets.get('Settings').data[1][1] = 9;
@@ -87,7 +100,7 @@ test('sort creates roster outputs, keeps comments as text in PP Students and app
   const f = fixture(); f.source(); f.adapter.sort('First practice run');
   const master = f.sheets.get('PP Senior').data, students = f.sheets.get('PP Students').data;
   assert.equal(master[1][2], 'MAJ-Robotics');
-  assert.equal(master[1][3], '');
+  assert.equal(master[1][3], 'MAJ-Robotics');
   assert.equal(master[0].length, 9);
   assert.equal(students[1][students[0].indexOf('Student comment')], "'=IMPORTXML(\"unsafe\")");
   assert.equal(f.sheets.get('PP Run log').data.length, 2);
@@ -206,6 +219,25 @@ test('student comments appear only in PP Students, never in grade, group or revi
   const students = f.sheets.get('PP Students').data, column = students[0].indexOf('Student comment');
   assert.ok(column >= 0);
   assert.ok(students.slice(1).every(row => row[column] === 'Invented practice response.'));
+});
+test('a Major shows the same MAJ- label in both columns, and Check again accepts that or a blank Project #2', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.sort('Master list labels');
+  const run = saved(f);
+  let majors = 0, minors = 0;
+  for (const tab of GRADE_TABS) for (const row of f.sheets.get(tab).data.slice(1)) {
+    const a = run.assignments.get(row[0]);
+    if (a.status !== 'placed') continue;
+    if (a.project2) { minors++; assert.match(row[2], /^MIN-/); assert.match(row[3], /^MIN-/); assert.notEqual(row[2], row[3]); }
+    else { majors++; assert.match(row[2], /^MAJ-/); assert.equal(row[3], row[2]); assert.equal(row[6], ''); }
+  }
+  assert.equal(majors, 152); assert.equal(minors, 88);
+  let checks = f.adapter.checkAgain();
+  assert.equal(checks.filter(c => c.severity === 'error').length, 0);
+  assert.ok(!checks.some(c => c.code === 'manual_edit'));
+  f.sheets.get('PP Junior').data.find(r => run.assignments.get(r[0])?.status === 'placed' && !run.assignments.get(r[0]).project2)[3] = '';
+  checks = f.adapter.checkAgain();
+  assert.equal(checks.filter(c => c.severity === 'error').length, 0);
+  assert.ok(!checks.some(c => c.code === 'manual_edit'));
 });
 test('PP Input check lists every hand-typed merge and every student with no response', () => {
   const f = fixture(true); f.adapter.practice();
