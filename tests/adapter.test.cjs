@@ -83,12 +83,13 @@ test('sort needs a reason before any sheet is created', () => {
   assert.throws(() => f.adapter.sort(' '), /run reason is required/);
   assert.equal(f.sheets.size, 0);
 });
-test('sort creates roster outputs with comments as text and appends run log', () => {
+test('sort creates roster outputs, keeps comments as text in PP Students and appends run log', () => {
   const f = fixture(); f.source(); f.adapter.sort('First practice run');
-  const master = f.sheets.get('PP Senior').data;
+  const master = f.sheets.get('PP Senior').data, students = f.sheets.get('PP Students').data;
   assert.equal(master[1][2], 'MAJ-Robotics');
   assert.equal(master[1][3], '');
-  assert.equal(master[1][9], "'=IMPORTXML(\"unsafe\")");
+  assert.equal(master[0].length, 9);
+  assert.equal(students[1][students[0].indexOf('Student comment')], "'=IMPORTXML(\"unsafe\")");
   assert.equal(f.sheets.get('PP Run log').data.length, 2);
   f.adapter.sort('Same settings reproducibility check');
   assert.equal(f.sheets.get('PP Run log').data.length, 3);
@@ -192,6 +193,19 @@ test('document lock is released after a failed action', () => {
   const f = fixture();
   assert.throws(() => f.context.PP_withLock(() => { throw new Error('expected'); }), /expected/);
   assert.equal(f.released(), 1);
+});
+test('student comments appear only in PP Students, never in grade, group or review tabs', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.sort('Comment placement check');
+  const shared = [...f.sheets.keys()].filter(name => /^PP (Senior|Junior|Sophomore|Group \d{2} .+|Needs you)$/.test(name));
+  assert.equal(shared.filter(name => name.startsWith('PP Group')).length, 23);
+  for (const name of shared) {
+    const data = f.sheets.get(name).data;
+    assert.ok(!data[0].includes('Student comment'), name);
+    assert.ok(!data.some(row => row.includes('Invented practice response.')), name);
+  }
+  const students = f.sheets.get('PP Students').data, column = students[0].indexOf('Student comment');
+  assert.ok(column >= 0);
+  assert.ok(students.slice(1).every(row => row[column] === 'Invented practice response.'));
 });
 test('PP Input check lists every hand-typed merge and every student with no response', () => {
   const f = fixture(true); f.adapter.practice();

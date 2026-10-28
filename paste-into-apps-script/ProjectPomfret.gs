@@ -1216,7 +1216,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
 var PPAdapter = (function () {
   'use strict';
   var INPUTS = [{ name: 'Senior', grade: 12 }, { name: 'Junior', grade: 11 }, { name: 'Sophomore', grade: 10 }];
-  var MASTER_HEADERS = ['Student ID', 'Name', 'Project #1', 'Project #2', 'Status', 'Fit #1', 'Fit #2', 'Reason', 'Review flags', 'Student comment'];
+  // Grade and group tabs get shared, and comments can name other students, so comments stay in PP Students.
+  var MASTER_HEADERS = ['Student ID', 'Name', 'Project #1', 'Project #2', 'Status', 'Fit #1', 'Fit #2', 'Reason', 'Review flags'];
   var SETTING_NOTES = {
     minSize: 'Minimum students in each group or each Minor week.',
     targetSize: 'Preferred group size.', maxSize: 'Absolute group size limit.',
@@ -1410,7 +1411,7 @@ var PPAdapter = (function () {
     [12, 11, 10].forEach(function (grade) {
       write(masterName(grade), MASTER_HEADERS, input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(a.project2, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; '), s.comments || ''];
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(a.project2, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
       }));
     });
     var oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); });
@@ -1419,11 +1420,11 @@ var PPAdapter = (function () {
       var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), rows = [];
       result.assignments.forEach(function (a) {
         var s = studentsById[a.studentId]; if (!s || a.status !== 'placed') return;
-        if (a.project1 === p.id) rows.push([p.finalLength === 'Minor' ? 'Week 1' : 'Both weeks', s.name, s.grade, s.id, a.fit1, a.reason, s.comments || '']);
-        if (a.project2 === p.id) rows.push(['Week 2', s.name, s.grade, s.id, a.fit2, a.reason, s.comments || '']);
+        if (a.project1 === p.id) rows.push([p.finalLength === 'Minor' ? 'Week 1' : 'Both weeks', s.name, s.grade, s.id, a.fit1, a.reason]);
+        if (a.project2 === p.id) rows.push(['Week 2', s.name, s.grade, s.id, a.fit2, a.reason]);
       });
       rows.sort(function (a, b) { return String(a[0]).localeCompare(String(b[0])) || b[2] - a[2] || String(a[3]).localeCompare(String(b[3])); });
-      write(name, ['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason', 'Student comment'], rows);
+      write(name, ['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason'], rows);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
     oldRegistry.forEach(function (name) {
@@ -1436,8 +1437,8 @@ var PPAdapter = (function () {
     Object.keys(result.summary.fitCounts || {}).forEach(function (tier) { summaryRows.push(['Fit ' + tier + ' placements', result.summary.fitCounts[tier]]); });
     [12, 11, 10].forEach(function (grade) { var g = (result.summary.byGrade || {})[grade]; if (g) { summaryRows.push(['Grade ' + grade + ' placed', g.placed], ['Grade ' + grade + ' mean fit', g.meanFit == null ? 'Not available' : g.meanFit]); } });
     write('PP Summary', ['Metric', 'Value'], summaryRows.concat([['Fingerprint', result.fingerprint], ['Review status', 'Proposed groups. Read PP Check and PP Needs you before use.']]));
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags', 'Student comment'], result.assignments.filter(function (a) { return a.status === 'review' || (a.flags || []).length || (studentsById[a.studentId].issues || []).length; }).map(function (a) {
-      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; '), s.comments || ''];
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { return a.status === 'review' || (a.flags || []).length || (studentsById[a.studentId].issues || []).length; }).map(function (a) {
+      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; ')];
     }));
     writeIssues('PP Check', result.checks.concat(input.issues || [], result.issues || []));
   }
