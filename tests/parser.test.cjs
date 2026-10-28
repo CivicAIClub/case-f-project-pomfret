@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const parser = require('../core/parser.js');
+const engine = require('../core/engine.js');
 const headers = ['Timestamp','Email Address','Name','Previous projects','UN goals','Types','Preference','Projects selected','Comments'];
 const projects = [
   {id:'robotics',name:'Robotics',length:'Major',types:['hands','head'],goals:['9'],aliases:[],enabled:true},
@@ -27,12 +28,48 @@ test('latest timestamp wins for same identity; old exclusion cannot vanish',()=>
   assert.equal(result.students[0].status,'trip'); assert.deepEqual(result.students[0].choices,['stem-app-building']);
   assert.equal(result.students[0].source.row,3);
 });
-test('different people sharing email both survive in review',()=>{
-  const a=row(), b=row('avery@example.org','Example, Jordan');
+const sharedFlag='Two students sent their forms from the same email. Check that both answers are right.';
+const smallRun={...engine.defaults,minSize:1,targetSize:2,maxSize:3,projectCount:1,minorProjects:0,minorMin:0,minorTarget:0,minorMax:0};
+test('two students on one email are both placed with their own IDs and a warning',()=>{
+  const a=row('shared@example.org','Example, Avery'), b=row('shared@example.org','Sample, Jordan','2026-10-02T12:00:00Z');
   const result=parser.prepare([table([a,b])],projects);
   assert.equal(result.students.length,2); assert.equal(result.stats.droppedDuplicates,0);
-  assert.equal(new Set(result.students.map(s=>s.id)).size,2);
-  assert.ok(result.students.every(s=>s.status==='review'));
+  assert.deepEqual(result.students.map(s=>s.id).sort(),['shared@example.org:example-avery','shared@example.org:sample-jordan']);
+  assert.ok(result.students.every(s=>s.status==='eligible' && s.issues.includes(sharedFlag)));
+  const shared=result.issues.filter(i=>i.code==='SHARED_EMAIL');
+  assert.deepEqual(shared.map(i=>i.severity),['warning','warning']); assert.deepEqual(shared.map(i=>i.studentId).sort(),result.students.map(s=>s.id).sort());
+  assert.ok(!result.issues.some(i=>i.severity==='error'));
+  const run=engine.sort(result.students,projects,smallRun,{});
+  assert.deepEqual(run.assignments.map(x=>x.status),['placed','placed']);
+  assert.deepEqual(parser.prepare([table([a,b])],projects),result);
+});
+test('the same student sending the form twice keeps only the newest response',()=>{
+  const older=row('twice@example.org','Example, Casey'), newer=row('twice@example.org','Example, Casey','2026-10-04T12:00:00Z'); newer[7]='App Building';
+  const result=parser.prepare([table([newer,older])],projects);
+  assert.equal(result.students.length,1); assert.equal(result.students[0].id,'twice@example.org');
+  assert.deepEqual(result.students[0].choices,['stem-app-building']); assert.equal(result.stats.droppedDuplicates,1);
+  assert.ok(!result.issues.some(i=>i.code==='SHARED_EMAIL'||i.severity!=='info'));
+  // "Last, First" one time and "First Last" the next is still one student.
+  const flipped=parser.prepare([table([row('flip@example.org','Example, Casey'),row('flip@example.org','Casey Example','2026-10-02T12:00:00Z')])],projects);
+  assert.equal(flipped.students.length,1); assert.equal(flipped.students[0].name,'Casey Example');
+  // A shortened first name is the same student, but the changed spelling is a warning.
+  const renamed=parser.prepare([table([row('nick@example.org','Doe, Nick'),row('nick@example.org','Doe, Nicholas','2026-10-02T12:00:00Z')])],projects);
+  assert.equal(renamed.students.length,1); assert.equal(renamed.students[0].name,'Doe, Nicholas');
+  assert.ok(renamed.issues.some(i=>i.code==='DUPLICATE_SUBMISSION'&&i.severity==='warning'));
+});
+test('the same name and email in two grades stays in review',()=>{
+  const result=parser.prepare([table([row('two-grades@example.org','Example, Rowan')],12),table([row('two-grades@example.org','Example, Rowan')],11)],projects);
+  assert.equal(result.students.length,2); assert.ok(result.students.every(s=>s.status==='review'));
+  assert.ok(result.issues.some(i=>i.code==='IDENTITY_CONFLICT'));
+});
+test('a shared email gender row is not guessed for either student; a Student ID row is used',()=>{
+  const t=table([row('shared@example.org','Example, Avery'),row('shared@example.org','Sample, Jordan','2026-10-02T12:00:00Z')]);
+  let result=parser.prepare([t],projects,{genders:[{email:'shared@example.org',gender:'Group A'}]});
+  assert.ok(result.students.every(s=>s.gender===null)); assert.equal(result.issues.filter(i=>i.code==='GENDER_SHARED_EMAIL').length,2);
+  result=parser.prepare([t],projects,{genders:[{email:'shared@example.org:sample-jordan',gender:'Group B'}]});
+  assert.equal(result.students.find(s=>s.name==='Sample, Jordan').gender,'group b'); assert.equal(result.students.find(s=>s.name==='Example, Avery').gender,null);
+  result=parser.prepare([t],projects,{statusChanges:[{email:'shared@example.org:example-avery',status:'trip',why:'Confirmed trip list'}]});
+  assert.equal(result.students.find(s=>s.name==='Example, Avery').status,'trip');
 });
 test('non-email trip labels never deduplicate people; green missing email stays review',()=>{
   const a=row('Trip label','Example, One',''), b=row('Trip label','Example, Two',''), c=row('','Example, Three','');

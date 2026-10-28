@@ -28,12 +28,14 @@ test('attached-data preparation uses supplied records, metadata and source refer
   assert.equal(data.projects.find(p=>p.name==='Glass Fusing').length,'Either');
 });
 
-test('malformed inputs and unverified sources fail closed; identity conflicts remain review records',()=>{
+test('malformed inputs and unverified sources fail closed; two students on one email are both kept',()=>{
   let input=payload(); input.sourceIntegrity.unchanged=false; assert.throws(()=>importer.prepareData(input),/UNVERIFIED_SOURCES/);
   input=payload(); input.tables.pop(); assert.throws(()=>importer.prepareData(input),/INVALID_PAYLOAD/);
   input=payload(); input.tables[0].values[0][7]='Missing project selection header'; assert.throws(()=>importer.prepareData(input));
   input=payload(); const duplicate=input.tables[0].values[1].slice(); duplicate[2]='Example, Different Person'; input.tables[0].values.push(duplicate);
-  const data=importer.prepareData(input); assert.equal(data.students.filter(s=>s.status==='review').length,2); assert.equal(data.students.length,4);
+  const data=importer.prepareData(input); assert.equal(data.students.length,4);
+  assert.equal(data.students.filter(s=>s.email==='practice12@example.org' && s.status==='eligible').length,2);
+  assert.equal(data.issues.filter(i=>i.code==='SHARED_EMAIL' && i.severity==='warning').length,2);
 });
 test('all seven resources can be represented while historical roster and documents stay metadata only',()=>{
   const input=payload(); input.referenceFiles=[
