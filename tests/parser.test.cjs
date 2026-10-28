@@ -230,3 +230,13 @@ test('gender reads M, Male, Boy, F, Female and Girl in any case, and anything el
   assert.deepEqual(rows.map((r,i)=>result.students.find(s=>s.email==='g'+i+'@example.org').gender),['Male','Male','Male','Female','Female','Female',null,null]);
   assert.ok(result.issues.some(i=>i.code==='GENDER_UNKNOWN_VALUE'&&/^2 Gender rows are blank or say something other than Male or Female/.test(i.message)));
 });
+
+test('Celebration of Learning is read into celebration, keeping only the part before " - "',()=>{
+  const question='What do you want to do for your Celebration of Learning? Pick one.';
+  const answers=['Project Fair - I want to show the robot we built','Presentation','Performance – a scene from our play','',' Gallery Walk '];
+  const rows=answers.map((answer,i)=>[...row('c'+i+'@example.org','Celebration, Student'+i),answer]);
+  const values=[[...headers,question],...rows],result=parser.prepare([{name:'Senior',grade:12,values,backgrounds:values.map(r=>r.map(()=>'#ffffff'))}],projects);
+  assert.deepEqual(answers.map((_,i)=>result.students.find(s=>s.email==='c'+i+'@example.org').celebration),['Project Fair','Presentation','Performance','','Gallery Walk']);
+  // A form without the question gives a blank.
+  assert.equal(parser.prepare([table([row()])],projects).students[0].celebration,'');
+});

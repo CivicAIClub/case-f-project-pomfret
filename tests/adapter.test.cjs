@@ -470,8 +470,8 @@ test('Check again rebuilds the group tabs, PP Summary and PP Needs you from the 
   const summary = () => new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
   const majors = summary().get('Major students'), snapshot = JSON.stringify(f.sheets.get('PP Run snapshot').data);
   f.adapter.checkAgain();
-  assert.ok(f.sheets.get(registry.get(target.id)).data.some(r => r[3] === pick.row[0] && r[0] === 'Both weeks'));
-  assert.ok(!f.sheets.get(registry.get(pick.a.project1)).data.some(r => r[3] === pick.row[0]));
+  assert.ok(f.sheets.get(registry.get(target.id)).data.some(r => r[0] === pick.s.name && r[1] === pick.s.grade));
+  assert.ok(!f.sheets.get(registry.get(pick.a.project1)).data.some(r => r[0] === pick.s.name));
   assert.equal(summary().get('Major students'), majors + 1);
   assert.equal(summary().get('Review status'), 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
   assert.ok(f.sheets.get('PP Needs you').data.length > 1);
@@ -748,4 +748,35 @@ test('PP Projects has a row per running project with its sizes, genders, grades,
   assert.ok(after(open.id)[4] > 12 && after(sized.id)[4] > 12);
   assert.match(after(open.id)[12], /^Over 12 students/);
   assert.doesNotMatch(after(sized.id)[12], /Over 12/);
+});
+
+test('each project tab is laid out like last year\'s roster: label, faculty, location, then students by grade and last name with a bold total; a Minor has a block for each week', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.setup();
+  const plain = f.adapter.sort('Find the projects'), major = plain.projects.find(p => p.finalLength === 'Major'), minor = plain.projects.find(p => p.finalLength === 'Minor');
+  const choice = f.sheets.get('Project choices').data.find(r => r[0] === major.id); choice[8] = 'Ms. Rivera,Mr. Chen'; choice[9] = 'Room 12';
+  f.adapter.sort('Rosters');
+  const run = saved(f), registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const HEADER = ['Student', 'Grade', 'Celebration of Learning', 'Why'];
+  const members = (p, w) => [...run.assignments.values()].filter(a => a.status === 'placed' && (w ? a.project2 : a.project1) === p.id).map(a => ({ s: run.students.get(a.studentId), a }));
+  const order = list => list.slice().sort((x, y) => y.s.grade - x.s.grade || x.s.name.localeCompare(y.s.name)).map(x => [x.s.name, x.s.grade, x.s.celebration, x.a.reason]);
+  // The Major: one block.
+  let tab = f.sheets.get(registry.get(major.id)), group = members(major, 0);
+  assert.deepEqual(tab.data.slice(0, 4).map(r => r[0]), [label(major), 'Faculty: Ms. Rivera, Mr. Chen', 'Location: Room 12', 'Student']);
+  assert.deepEqual(tab.data[3], HEADER);
+  assert.deepEqual(tab.data.slice(4, -1), order(group));
+  assert.deepEqual(tab.data[tab.data.length - 1][0], 'TOTAL - ' + group.length + ' Students');
+  assert.ok(tab.isBold(1) && tab.isBold(tab.data.length) && !tab.isBold(2) && !tab.isBold(5));
+  // Practice answers show the kind of Celebration only, and no comment appears.
+  assert.ok(group.length && tab.data.slice(4, -1).every(r => ['Project Fair', 'Presentation', 'Performance', 'Gallery Walk'].includes(r[2])));
+  assert.ok(!tab.data.flat().some(v => /Invented practice response|Show what we made|A short scene/.test(String(v))));
+  // The Minor: GROUP 1 and GROUP 2, each with its header and total. Blank faculty and location stay blank.
+  tab = f.sheets.get(registry.get(minor.id));
+  const one = members(minor, 0), two = members(minor, 1), expected = [[label(minor)], ['Faculty:'], ['Location:'],
+    ['GROUP 1 (week 1)'], HEADER, ...order(one), ['GROUP 1 TOTAL - ' + one.length + ' Students'], [''],
+    ['GROUP 2 (week 2)'], HEADER, ...order(two), ['GROUP 2 TOTAL - ' + two.length + ' Students']];
+  assert.deepEqual(tab.data.map(r => r.slice(0, 4).join('|').replace(/\|+$/, '')), expected.map(r => r.join('|')));
+  const bold = tab.data.map((_, i) => tab.isBold(i + 1));
+  assert.deepEqual(tab.data.map((r, i) => bold[i] ? r[0] : null).filter(Boolean), [label(minor), 'GROUP 1 (week 1)', 'Student', 'GROUP 1 TOTAL - ' + one.length + ' Students', 'GROUP 2 (week 2)', 'Student', 'GROUP 2 TOTAL - ' + two.length + ' Students']);
+  // Grades go seniors, juniors, then sophomores within each block.
+  for (const g of [one, two]) assert.ok(order(g).every((r, i, all) => !i || all[i - 1][1] >= r[1]));
 });

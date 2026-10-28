@@ -282,23 +282,30 @@ var PPAdapter = (function () {
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
   }
-  function writeGroupTabs(students, result) {
+  // A roster for each project like last year's: the label, faculty and location, then its students,
+  // seniors first and then by last name. A Minor has a block for each week. Nothing reads these
+  // tabs back.
+  function writeGroupTabs(students, result, info) {
     var studentsById = {}, oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); }), newRegistry = [];
     students.forEach(function (s) { studentsById[s.id] = s; });
+    function total(n) { return n + (n === 1 ? ' Student' : ' Students'); }
     result.projects.forEach(function (p, index) {
-      var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), rows = [];
-      result.assignments.forEach(function (a) {
-        var s = studentsById[a.studentId]; if (!s || a.status !== 'placed') return;
-        if (a.project1 === p.id) rows.push([p.finalLength === 'Minor' ? 'Week 1' : 'Both weeks', s.name, s.grade, s.id, a.fit1, a.reason]);
-        if (a.project2 === p.id) rows.push(['Week 2', s.name, s.grade, s.id, a.fit2, a.reason]);
+      var name = 'PP Group ' + String(index + 1).padStart(2, '0') + ' ' + p.name.replace(/[\[\]*?\/\\:]/g, ' ').slice(0, 65), minor = p.finalLength === 'Minor', where = info[p.id] || { faculty: '', location: '' };
+      var lines = [{ cells: [projectToken(p.id, result.projects)], style: 'title' }, { cells: [('Faculty: ' + where.faculty).trim()] }, { cells: [('Location: ' + where.location).trim()] }];
+      (minor ? [0, 1] : [0]).forEach(function (w) {
+        var group = result.assignments.filter(function (a) { return a.status === 'placed' && studentsById[a.studentId] && (w ? a.project2 : a.project1) === p.id; });
+        group.sort(function (a, b) { var x = studentsById[a.studentId], y = studentsById[b.studentId]; return y.grade - x.grade || byLastName(x, y); });
+        if (minor) { if (w) lines.push({ cells: [] }); lines.push({ cells: ['GROUP ' + (w + 1) + ' (week ' + (w + 1) + ')'], style: 'title' }); }
+        lines.push({ cells: ['Student', 'Grade', 'Celebration of Learning', 'Why'], style: 'header' });
+        group.forEach(function (a) { var s = studentsById[a.studentId]; lines.push({ cells: [s.name || s.id, s.grade, s.celebration || '', a.reason] }); });
+        lines.push({ cells: [(minor ? 'GROUP ' + (w + 1) + ' TOTAL - ' : 'TOTAL - ') + total(group.length)], style: 'total' });
       });
-      rows.sort(function (a, b) { return String(a[0]).localeCompare(String(b[0])) || b[2] - a[2] || String(a[3]).localeCompare(String(b[3])); });
-      write(name, ['Session', 'Name', 'Grade', 'Student ID', 'Fit', 'Reason'], rows);
+      writeLayout(name, 4, lines);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
     oldRegistry.forEach(function (name) {
       if (/^PP Group \d{2} /.test(name) && !newRegistry.some(function (r) { return r[2] === name; }) && sheet(name)) {
-        write(name, ['Status'], [['Retired by the latest run. Use PP Project tabs for current groups.']]);
+        writeLayout(name, 1, [{ cells: ['Retired by the latest run. Use PP Project tabs for current groups.'] }]);
       }
     });
     write('PP Project tabs', ['Project ID', 'Project', 'Sheet', 'Length'], newRegistry);
@@ -398,7 +405,7 @@ var PPAdapter = (function () {
     students.forEach(function (s) { studentsById[s.id] = s; });
     writeMasterList(students, result, info);
     writeProjectsOverview(students, result, info, config, decisions);
-    writeGroupTabs(students, result);
+    writeGroupTabs(students, result, info);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {
       var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; ')];
@@ -649,11 +656,11 @@ var PPAdapter = (function () {
     if (ss().getSheets().some(nonempty)) throw new Error('Make practice data only works in a completely empty scratch spreadsheet. Create a new spreadsheet first.');
     write('Projects', ['Project', 'Length', 'Type', 'UN Goals'], PPCatalog.map(function (p) { return [p.name, p.length, p.types.join(', '), p.goals.join(', ')]; }));
     INPUTS.forEach(function (tab, g) {
-      var headers = ['Timestamp', 'Email Address', 'Name', 'Previous projects', 'UN goals', 'Types', 'Preference', 'Projects selected', 'Comments'];
+      var headers = ['Timestamp', 'Email Address', 'Name', 'Previous projects', 'UN goals', 'Types', 'Preference', 'Projects selected', 'Comments', 'What do you want to do for your Celebration of Learning?'];
       var rows = [];
       for (var i = 0; i < 80; i++) {
         var n = g * 80 + i + 1, selected = PPCatalog.filter(function (p) { return p.enabled !== false; }).filter(function (_, j) { return (j + n) % 3 === 0; });
-        rows.push([new Date(2026, 9, 20, 12, i), 'practice' + n + '@example.org', 'Practice Student ' + String(n).padStart(3, '0'), 'None', ['3', '4', '9', '10', '11', '12', '13', '15', '16'][n % 9], ['hands', 'head', 'heart', 'feet'][n % 4], n % 3 === 0 ? 'Not sure' : n % 7 === 0 ? 'Minor' : 'Major', selected.map(function (p) { return p.name; }).join('; '), 'Invented practice response.']);
+        rows.push([new Date(2026, 9, 20, 12, i), 'practice' + n + '@example.org', 'Practice Student ' + String(n).padStart(3, '0'), 'None', ['3', '4', '9', '10', '11', '12', '13', '15', '16'][n % 9], ['hands', 'head', 'heart', 'feet'][n % 4], n % 3 === 0 ? 'Not sure' : n % 7 === 0 ? 'Minor' : 'Major', selected.map(function (p) { return p.name; }).join('; '), 'Invented practice response.', ['Project Fair - Show what we made', 'Presentation', 'Performance - A short scene', 'Gallery Walk'][n % 4]]);
       }
       write(tab.name, headers, rows);
     });

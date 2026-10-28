@@ -164,11 +164,15 @@ var PPParser = (function () {
       previous: findHeader(headers, 'Previous projects', function (h) { return h === 'previous projects' || h.indexOf('what project s were you in last year') === 0; }, false),
       preference: findHeader(headers, 'Major/Minor preference', function (h) { return h === 'preference' || h.indexOf('would you prefer to do a major project') === 0; }, true),
       comments: findHeader(headers, 'Comments', function (h) { return h === 'comments' || h.indexOf('please share anything else') === 0; }, false),
+      celebration: findHeader(headers, 'Celebration of Learning', function (h) { return h.indexOf('what do you want to do for your celebration of learning') === 0; }, false),
       goals: headers.map(function (h,i) { h = normalize(h); return h === 'un goals' || h.indexOf('sustainable development goals') >= 0 ? i : -1; }).filter(function (i) { return i >= 0; }),
       types: headers.map(function (h,i) { h = normalize(h); return h === 'types' || h.indexOf('type of project') >= 0 ? i : -1; }).filter(function (i) { return i >= 0; }),
       choices: headers.map(function (h,i) { h = normalize(h); return h === 'projects selected' || h === 'choices' || (h.indexOf('check all') >= 0 && h.indexOf('projects') >= 0) ? i : -1; }).filter(function (i) { return i >= 0; })
     };
   }
+  // The kind of Celebration of Learning, such as "Project Fair" from "Project Fair - I want to...".
+  // What follows the dash is the student's own words, so it is left out.
+  function celebrationOf(value) { return text(value).split(/\s+[-\u2013\u2014]\s+/)[0].trim(); }
   function preferenceOf(value) {
     var val = normalize(value);
     if (val === 'not sure' || val === 'either' || val.indexOf('not sure') === 0) return 'Not sure';
@@ -233,6 +237,7 @@ var PPParser = (function () {
           id:email || ('row:' + slug(sheetName) + ':' + grade + ':' + source.row), name:name, email:email, grade:grade,
           preference:pref || 'Not sure', choices:selected, types:types, goals:goals, previous:previous.ids,
           previousKnown:c.previous < 0 || answer !== '', status:status, gender:null, comments:c.comments >= 0 ? text(row[c.comments]) : '',
+          celebration:c.celebration >= 0 ? celebrationOf(row[c.celebration]) : '',
           source:source, issues:problems, _time:parsedTime, _nameKey:normalize(name), _invalid:identityInvalid,
           _blocked:identityInvalid || !pref || (parsedTime === null && !COLORS[colorOf(fill)]),
           _colorStatus:COLORS[colorOf(fill)] || null
