@@ -1619,7 +1619,7 @@ var PPAdapter = (function () {
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.',
     tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.',
     useFriendRequests: 'TRUE uses the reviewed Friend requests tab: "Not with" pairs are kept apart and "With" requests are met where the rules allow. FALSE leaves the groups unchanged.',
-    balanceGender: 'TRUE swaps students between groups so each group has no Male students or at least three, and the same for Female. No swap drops a student's fit by more than one step. PP Check reports breaks either way.'
+    balanceGender: 'TRUE swaps students between groups so each group has no Male students or at least three, and the same for Female. A swap never drops the fit of a student by more than one step. PP Check reports breaks either way.'
   };
   // Settings added after the first school trial. A sheet without these rows uses the default.
   var NEW_SETTINGS = ['tieSeed', 'useFriendRequests', 'balanceGender'];
