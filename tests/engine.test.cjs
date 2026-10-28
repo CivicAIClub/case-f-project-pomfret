@@ -166,3 +166,18 @@ test('Major-preference students move to Minors only up to the Minor minimum, and
   assert.ok(at('soph').flags.includes('This student asked for a Major but received Minors to reach the Minor student minimum.'));
   assert.equal(at('junior').project2,null); assert.equal(at('senior').project2,null);
 });
+
+test('students who tie are ordered by a fixed shuffle of their ID and tieSeed, never by name or alphabet',()=>{
+  // Two seniors with the same answers want the one seat in a, and b suits neither of them: a tie.
+  const projects=[p('a'),p('b','Major',{types:['feet'],goals:['1']})],cfg=config({maxSize:1,targetSize:1,tieSeed:2026});
+  const pair=(nameC,nameD)=>[s('casey@example.org',{email:'casey@example.org',grade:12,choices:['a','c'],name:nameC}),s('drew@example.org',{email:'drew@example.org',grade:12,choices:['a','c'],name:nameD})];
+  const winner=(students,seed=2026)=>E.sort(students,projects,{...cfg,tieSeed:seed},{}).assignments.find(a=>a.project1==='a').studentId;
+  // Seed 2026 favors the alphabetically later ID, and renaming the students changes nothing.
+  assert.equal(winner(pair('Casey Practice','Drew Practice')),'drew@example.org');
+  assert.equal(winner(pair('Zed Practice','Aaron Practice')),'drew@example.org');
+  // A different seed can change who wins.
+  assert.equal(winner(pair('Casey Practice','Drew Practice'),7),'casey@example.org');
+  // The same seed always gives the same groups.
+  const students=pair('Casey Practice','Drew Practice');
+  assert.deepEqual(E.sort(students,projects,cfg,{}),E.sort(students,projects,cfg,{}));
+});

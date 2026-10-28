@@ -13,8 +13,12 @@ var PPAdapter = (function () {
     projectCount: 'Target number of distinct running projects.', minorProjects: 'Target distinct Minor projects, each running twice.',
     minorMin: 'Minimum students taking two Minors.', minorTarget: 'Target students taking two Minors.',
     minorMax: 'Maximum students taking two Minors.', allowMajorToMinor: 'Let Major-preference students take Minors only while Minors are below minorMin; each move is flagged.',
-    checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.'
+    checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.',
+    tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.'
   };
+  // Settings added after the first school trial. A sheet without these rows uses the default.
+  var NEW_SETTINGS = ['tieSeed'];
+  var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
   function text(v) { return v == null ? '' : String(v).trim(); }
   function safeCell(v) {
@@ -59,6 +63,19 @@ var PPAdapter = (function () {
   function seed(name, headers, rows) {
     if (!nonempty(sheet(name))) write(name, headers, rows);
   }
+  // Add the header cells a tab is missing after its last header. No other cell changes.
+  function addColumns(name, headers) {
+    var s = sheet(name), data = values(name), have = data.length ? data[0].map(text) : [];
+    var missing = headers.filter(function (h) { return have.indexOf(h) < 0; }), last = 0;
+    if (!s || !missing.length) return;
+    have.forEach(function (h, i) { if (h) last = i + 1; });
+    resize(s, Math.max(1, s.getLastRow()), last + missing.length);
+    s.getRange(1, last + 1, 1, missing.length).setValues([missing]).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
+  }
+  function appendRecord(name, record) {
+    var header = values(name, true)[0].map(text);
+    sheet(name, true).appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
+  }
   function records(name, headers, required) {
     var data = values(name, required);
     if (!data.length) return [];
@@ -91,7 +108,7 @@ var PPAdapter = (function () {
         result[key] = Number(r.Value);
       }
     });
-    Object.keys(result).forEach(function (key) { if (!seen[key]) throw new Error('Settings is missing ' + key + '. Restore the row before running.'); });
+    Object.keys(result).forEach(function (key) { if (!seen[key] && NEW_SETTINGS.indexOf(key) < 0) throw new Error('Settings is missing ' + key + '. Restore the row before running.'); });
     if (!(result.minSize > 0 && result.minSize <= result.targetSize && result.targetSize <= result.maxSize && result.maxSize <= 14)) throw new Error('Group sizes must satisfy 1 <= minimum <= target <= maximum <= 14.');
     if (!(result.minorMin <= result.minorTarget && result.minorTarget <= result.minorMax)) throw new Error('Minor cohort sizes must satisfy minimum <= target <= maximum.');
     if (result.projectCount < 1 || result.minorProjects > result.projectCount || (result.minorProjects === 1)) throw new Error('Project counts are invalid. Two distinct Minor projects are required for a Minor student.');
@@ -105,11 +122,14 @@ var PPAdapter = (function () {
   }
   function setup() {
     seed('Settings', ['Setting', 'Value', 'Notes'], Object.keys(PPEngine.defaults).map(function (k) { return [k, PPEngine.defaults[k], SETTING_NOTES[k] || '']; }));
+    var have = records('Settings', ['Setting'], true).map(function (r) { return text(r.Setting); });
+    Object.keys(PPEngine.defaults).forEach(function (k) { if (have.indexOf(k) < 0) appendRecord('Settings', { Setting: k, Value: PPEngine.defaults[k], Notes: SETTING_NOTES[k] || '' }); });
     var projects = nonempty(sheet('Projects')) ? readProjects().projects : PPCatalog;
     seed('Project choices', ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with"], projects.map(function (p) { return [p.id, p.name, '', '', false, '', '']; }));
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
-    seed('PP Run log', ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings'], []);
+    seed('PP Run log', RUN_LOG_HEADERS, []);
+    addColumns('PP Run log', RUN_LOG_HEADERS);
     return { message: 'Settings and decision tabs are ready. Existing values were preserved.' };
   }
   function options() {
@@ -268,7 +288,7 @@ var PPAdapter = (function () {
     snapshot(input, result, config, decisions);
     output(input, result);
     var allChecks = result.checks.concat(input.issues || [], result.issues || []);
-    sheet('PP Run log', true).appendRow([new Date(), safeCell(reason), result.fingerprint, result.summary.placed, result.summary.needsReview, allChecks.filter(function (c) { return c.severity === 'error'; }).length, allChecks.filter(function (c) { return c.severity === 'warning'; }).length]);
+    appendRecord('PP Run log', { 'Time': new Date(), 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed });
     return result;
   }
   function readSnapshot() {

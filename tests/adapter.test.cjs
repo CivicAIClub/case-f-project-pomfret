@@ -368,3 +368,20 @@ test('Check again reports a gender rule a hand move breaks when gender data exis
   pick.row[2] = pick.row[3] = label(to);
   assert.ok(f.adapter.checkAgain().some(c => c.code === 'GENDER_BALANCE' && c.severity === 'warning' && c.projectId === to.id));
 });
+
+test('Setup adds the tieSeed setting and the Tie seed log column to an older sheet and keeps its values', () => {
+  const f = fixture(true); f.adapter.practice();
+  const settings = f.sheets.get('Settings').data, log = f.sheets.get('PP Run log').data;
+  // Make the sheet look like one made before this round.
+  settings.splice(settings.findIndex(r => r[0] === 'tieSeed'), 1);
+  settings.find(r => r[0] === 'minSize')[1] = 9;
+  log[0] = log[0].slice(0, 7);
+  assert.equal(f.adapter.readSettings().tieSeed, 2026);
+  f.adapter.setup();
+  assert.equal(settings.find(r => r[0] === 'minSize')[1], 9);
+  assert.deepEqual(settings.find(r => r[0] === 'tieSeed').slice(0, 2), ['tieSeed', 2026]);
+  assert.ok(settings.find(r => r[0] === 'tieSeed')[2].length > 0);
+  f.adapter.sort('Tie seed log check');
+  assert.equal(log[0][7], 'Tie seed');
+  assert.equal(f.sheets.get('PP Run log').data[1][7], 2026);
+});
