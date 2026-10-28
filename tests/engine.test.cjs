@@ -541,3 +541,41 @@ test('a friend request written with two Student IDs that share an email is used'
   assert.deepEqual(bare.friends.map(x=>[x.result,x.why]),[['Not applied','Two students share this email']]);
   assert.ok(bare.issues.some(i=>i.code==='FRIEND_SHARED_EMAIL'));
 });
+
+test('with friend requests on, no student without a "With" request of their own ends up in fewer projects they checked',()=>{
+  // Friend requests must never cost a student who didn't ask a project they checked. A request is a
+  // student's own when they wrote it, or when the row says they named each other.
+  const checked=(r,st)=>{const a=r.assignments.find(x=>x.studentId===st.id);return [a.project1,a.project2].filter(id=>id&&st.choices.includes(id)).length;};
+  function protects(students,projects,cfg,friends,context={}){
+    const asked=new Set(friends.filter(f=>f.request==='With').flatMap(f=>f.namedEachOther?[f.email,f.classmateEmail]:[f.email]).map(e=>e.trim().toLowerCase()));
+    const on=E.sort(students,projects,{...cfg,useFriendRequests:true},{},{...context,friends}),off=E.sort(students,projects,{...cfg,useFriendRequests:false},{},{...context,friends});
+    for(const st of students.filter(x=>!asked.has(x.email.toLowerCase())))assert.ok(checked(on,st)>=checked(off,st),st.id+' lost a project they checked');
+    return on;
+  }
+  // A Not-sure student who named a Major-preference classmate keeps the track the sort gives them, so
+  // nobody else is pulled into Minors they didn't check to keep the Minor count.
+  protects([s('p1',{preference:'Minor',choices:['m1','m2']}),s('x',{preference:'Not sure',choices:['m1','m2']}),s('y',{grade:12,preference:'Not sure',choices:['a','z']}),s('maj')],
+    [p('a'),p('m1','Minor'),p('m2','Minor')],config({projectCount:3,minorProjects:2,minorMin:2,minorTarget:2,minorMax:3,maxSize:4}),[ask('x','maj')]);
+  // Joins that move the asker or a classmate who named them back.
+  const pair=pairRun();
+  protects(pair.students,pair.projects,pair.cfg,[ask('ann','bea'),ask('bea','ann','With',3)]);
+  protects(pair.students,pair.projects,pair.cfg,[ask('f1','f3',undefined,2,{namedEachOther:true})]);
+  // A swap moves a third student, who never gets a worse fit.
+  const full=[p('a'),p('b','Major',{goals:['9']})],swapped=protects([s('ann',{grade:12,choices:['a','b']}),s('u',{choices:['a','z']}),s('bea',{choices:['b','z'],goals:['9']}),s('t',{choices:['a','b'],goals:[]})],full,config({maxSize:2}),[ask('ann','bea')]);
+  assert.match(swapped.assignments.find(a=>a.studentId==='t').reason,/ Swapped into this group /);
+  // A week switch.
+  const plan={A:['glass','larp'],f1:['larp','glass'],B:['larp','cooking'],f2:['cooking','larp'],f3:['glass','cooking'],f4:['cooking','glass']};
+  protects(Object.keys(plan).map(id=>s(id,{preference:'Minor',choices:plan[id].slice()})),[p('glass','Minor'),p('larp','Minor',{goals:['9']}),p('cooking','Minor')],
+    config({projectCount:3,minorProjects:3,minorMin:6,minorTarget:6,minorMax:6,maxSize:3}),[ask('A','B')],{previous:Object.keys(plan).map(id=>({studentId:id,project1:plan[id][0],project2:plan[id][1]}))});
+  // A larger invented roster: 36 students, three Majors, four Minors and 18 "With" requests, four of
+  // them named both ways.
+  let seed=2026;const rand=n=>(seed=seed*48271%2147483647)%n;
+  const pool=['a','b','c','m1','m2','m3','m4'],roster=Array.from({length:36},(_,i)=>{const choices=[];while(choices.length<3){const c=pool[rand(7)];if(!choices.includes(c))choices.push(c);}
+    return s('r'+i,{grade:10+rand(3),preference:['Major','Minor','Not sure'][rand(3)],choices,types:[['hands','feet'][rand(2)]],goals:[['3','9'][rand(2)]]});});
+  const rows=Array.from({length:14},(_,i)=>{const from=rand(36),to=(from+1+rand(35))%36;return ask('r'+from,'r'+to,'With',2+i);});
+  rows.push(...rows.slice(0,4).map((q,i)=>({...q,row:16+i,email:q.classmateEmail,classmateEmail:q.email})));
+  const big=protects(roster,[p('a'),p('b','Major',{goals:['9']}),p('c','Major',{types:['feet']}),p('m1','Minor'),p('m2','Minor',{goals:['9']}),p('m3','Minor',{types:['feet']}),p('m4','Minor',{types:['feet'],goals:['9']})],
+    config({projectCount:7,minorProjects:4,minSize:2,targetSize:5,maxSize:8,minorMin:12,minorTarget:14,minorMax:16}),rows);
+  assert.equal(big.summary.placed,36);
+  assert.ok(big.friends.some(f=>f.why==='Moved to be together'));
+});
