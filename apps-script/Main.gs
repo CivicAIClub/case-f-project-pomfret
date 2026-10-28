@@ -16,10 +16,11 @@ var PPAdapter = (function () {
     checkedBeforeInferred: 'Prefer a checked project with no other match over an unchecked project matching Type and goal.',
     tieSeed: 'Shuffles the order of students who tie, so names never decide who wins. Any whole number; the same number always gives the same groups.',
     useFriendRequests: 'TRUE uses the reviewed Friend requests tab: "Not with" pairs are kept apart and "With" requests are met where the rules allow. FALSE leaves the groups unchanged.',
-    balanceGender: 'TRUE swaps students between groups so each group has no Male students or at least three, and the same for Female. A swap never drops the fit of a student by more than one step. PP Check reports breaks either way.'
+    balanceGender: 'TRUE swaps students between groups so each group has no Male students or at least three, and the same for Female. A swap never drops the fit of a student by more than one step. PP Check reports breaks either way.',
+    followChecksOverTrack: "TRUE: a student whose Major or Minor answer doesn't match the projects they checked is placed by what they checked."
   };
   // Settings added after the first school trial. A sheet without these rows uses the default.
-  var NEW_SETTINGS = ['tieSeed', 'useFriendRequests', 'balanceGender'];
+  var NEW_SETTINGS = ['tieSeed', 'useFriendRequests', 'balanceGender', 'followChecksOverTrack'];
   var FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
   var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
   var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
@@ -292,6 +293,8 @@ var PPAdapter = (function () {
     (summary.groups || []).forEach(function (g) { rows.push(['Group size: ' + g.name, g.length === 'Minor' ? 'Week 1: ' + g.sizes[0] + ', week 2: ' + g.sizes[1] : g.sizes[0]]); });
     var f = summary.friends;
     if (f) rows.push(['Friend requests', f.used ? 'Used' : 'Turned off in Settings'], ['"With" requests met', f.withMet], ['"With" requests not met', f.withUnmet], ['Students with a "With" request who are with a classmate they named', f.studentsMet + ' of ' + f.studentsWith], ['"Not with" requests broken', f.notWithBroken]);
+    var t = summary.tracks;
+    if (t) rows.push(['Students whose Major or Minor answer and checks disagree', t.disagree + ' (followChecksOverTrack is ' + (t.followChecks ? 'on' : 'off') + ')']);
     return rows;
   }
   // Placed seniors with at least one project they didn't check, for Mr. Litowitz to look over.
@@ -549,7 +552,7 @@ var PPAdapter = (function () {
       if (PPEngine.fingerprint({ students: live.students, projects: live.projects, settings: currentSettings, choices: currentChoices }) !== state.inputFingerprint) checks.push({ severity: 'warning', code: 'stale_inputs', message: 'Inputs or settings changed after Sort. These checks use the saved run rules. Run Sort again to apply the current inputs.' });
     } catch (e) { checks.push({ severity: 'warning', code: 'current_input_error', message: 'The saved run was checked, but current inputs could not be compared: ' + e.message }); }
     // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
-    var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
+    var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current, state.settings, state.choices) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
     if (report) summary.friends = report.summary;
     writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
     if (report) writeFriendCheck(report.rows);

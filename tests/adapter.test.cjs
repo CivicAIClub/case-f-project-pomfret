@@ -587,6 +587,42 @@ test('Check again reports a "Not with" pair put together by hand and rebuilds PP
   assert.deepEqual(f.sheets.get('PP Friend check').data[1].slice(3), ['Together', 'In the same group']);
 });
 
+test('Setup adds followChecksOverTrack and keeps its value; PP Needs you and PP Summary list students whose answer and checks disagree, also after Check again', () => {
+  const f = fixture(true); f.adapter.practice();
+  const settings = f.sheets.get('Settings').data, setting = () => settings.find(r => r[0] === 'followChecksOverTrack');
+  assert.deepEqual(setting(), ['followChecksOverTrack', false, "TRUE: a student whose Major or Minor answer doesn't match the projects they checked is placed by what they checked."]);
+  // A sheet from before this setting uses FALSE, and Setup adds the row. A value already there stays.
+  settings.splice(settings.indexOf(setting()), 1);
+  assert.equal(f.adapter.readSettings().followChecksOverTrack, false);
+  f.adapter.setup(); assert.equal(setting()[1], false);
+  setting()[1] = true; f.adapter.setup(); assert.equal(setting()[1], true);
+  setting()[1] = false;
+  // Practice Student 001 said Major. Now they checked only two Minors.
+  f.sheets.get('Senior').data[1][7] = 'Cooking for Comfort; Culture and Cuisine';
+  const id = 'practice1@example.org', needs = () => (f.sheets.get('PP Needs you').data.find(r => r[0] === id) || [])[5] || '';
+  const count = () => new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]])).get('Students whose Major or Minor answer and checks disagree');
+  const grade = () => f.sheets.get('PP Senior').data.find(r => r[0] === id);
+  let result = f.adapter.sort('Answer and checks disagree');
+  assert.ok(['cooking-for-comfort', 'culture-and-cuisine'].every(p => result.projects.some(x => x.id === p && x.finalLength === 'Minor')));
+  for (const run of [() => {}, () => f.adapter.checkAgain()]) {
+    run();
+    assert.match(grade()[2], /^MAJ-/); assert.match(needs(), /Said Major but checked no running Major\./); assert.equal(count(), '1 (followChecksOverTrack is off)');
+  }
+  setting()[1] = true;
+  result = f.adapter.sort('Follow what they checked');
+  for (const run of [() => {}, () => f.adapter.checkAgain()]) {
+    run();
+    assert.deepEqual([grade()[2], grade()[3]].sort(), ['MIN-Cooking for Comfort', 'MIN-Culture and Cuisine']);
+    assert.match(grade()[7], / Said Major but checked only Minor projects, so placed by what they checked\.$/);
+    assert.match(needs(), /Said Major but placed in Minors they checked\. Move them to a Major on their grade tab if you'd rather\./);
+    assert.equal(count(), '1 (followChecksOverTrack is on)');
+  }
+  // Moved back to a Major by hand, the student is locked, so the row and the count go.
+  const major = saved(f).projects.find(p => p.finalLength === 'Major'); grade()[2] = grade()[3] = label(major);
+  f.adapter.checkAgain();
+  assert.doesNotMatch(needs(), /Said Major/); assert.equal(count(), '0 (followChecksOverTrack is on)');
+});
+
 test('Setup adds Max size to an older Project choices tab and keeps its values; a Max size reaches the sort and PP Summary', () => {
   const f = fixture(true); f.adapter.practice();
   const choices = f.sheets.get('Project choices').data;

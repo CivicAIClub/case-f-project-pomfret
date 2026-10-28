@@ -117,9 +117,13 @@ test('explain gives the fit, reason and flags the sort wrote, and a move by hand
   const projects=[p('a','Major'),p('m1','Minor'),p('m2','Minor')],cfg=config({projectCount:3,minorProjects:2,minorMin:3,minorTarget:3,minorMax:3});
   const students=[s('minor',{grade:12,preference:'Minor'}),s('unsure',{grade:12,preference:'Not sure'}),s('soph',{grade:10}),s('junior',{grade:11}),s('senior',{grade:12,status:'late'})];
   const r=E.sort(students,projects,cfg,{});
+  // The sort also flags a student whose Major or Minor answer and checks disagree, like minor, who
+  // asked for Minors but checked only a Major.
+  const answerFlag=f=>/^Said (Major|Minor) but /.test(f);
+  assert.deepEqual(r.assignments.find(a=>a.studentId==='minor').flags.filter(answerFlag),['Said Minor but checked fewer than two running Minors.']);
   for(const a of r.assignments){
     const e=E.explain(students.find(x=>x.id===a.studentId),[a.project1,a.project2].filter(Boolean),r.projects,cfg,{},false);
-    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason,flags:a.flags});
+    assert.deepEqual({fit1:e.fit1,fit2:e.fit2,reason:e.reason,flags:e.flags},{fit1:a.fit1,fit2:a.fit2,reason:a.reason,flags:a.flags.filter(f=>!answerFlag(f))});
   }
   const soph=r.assignments.find(a=>a.studentId==='soph');
   assert.ok(soph.flags.some(x=>/asked for a Major/.test(x)));
@@ -249,6 +253,59 @@ test('Minor-preference students, leaders and locked students are placed as befor
   // maximum, so the Not-sure students who lean Minor do Majors.
   assert.equal(r.summary.minorStudents,6);
   for(const id of ['lean0','lean1','lean2'])assert.equal(track(r,id),'Major',id);
+});
+
+const follow=cfg=>({...cfg,followChecksOverTrack:true});
+test('with followChecksOverTrack FALSE, a student who said Major and checked only Minors does a Major and is flagged for PP Needs you',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3}),r=E.sort([...fixed,s('maj',{choices:['m1','m2']})],projects,cfg,choices);
+  assert.equal(track(r,'maj'),'Major');
+  assert.ok(r.assignments.find(a=>a.studentId==='maj').flags.includes('Said Major but checked no running Major.'));
+  assert.deepEqual(r.summary.tracks,{disagree:1,followChecks:false});
+});
+test('with followChecksOverTrack TRUE, the same student does the two Minors they checked, and the reason says why',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3}),people=[...fixed,s('maj',{choices:['m1','m2']})];
+  const r=E.sort(people,projects,follow(cfg),choices),a=r.assignments.find(x=>x.studentId==='maj');
+  assert.deepEqual([a.project1,a.project2].sort(),['m1','m2']);
+  assert.match(a.reason,/\. Said Major but checked only Minor projects, so placed by what they checked\.$/);
+  // The PP Needs you flag replaces the note about the Minor minimum.
+  assert.deepEqual(a.flags,["Said Major but placed in Minors they checked. Move them to a Major on their grade tab if you'd rather."]);
+  assert.deepEqual(r.summary.tracks,{disagree:1,followChecks:true});
+  // PP Check lists the change as information, even when Major-preference students may not take Minors.
+  for(const run of [r,E.sort(people,projects,{...follow(cfg),allowMajorToMinor:false},choices)]){
+    assert.deepEqual(run.checks.filter(c=>c.code==='MAJOR_TO_MINOR').map(c=>[c.severity,c.message]),[['info','This student asked for a Major and received Minors. Placed by what they checked.']]);
+    assert.deepEqual(errors(run),[]);
+  }
+});
+test('with followChecksOverTrack TRUE, a student who said Minor and checked 1 Minor and 2 Majors does a Major they checked',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3}),people=[...fixed,s('min',{preference:'Minor',choices:['m1','a','b']})];
+  const r=E.sort(people,projects,follow(cfg),choices),a=r.assignments.find(x=>x.studentId==='min');
+  assert.ok(['a','b'].includes(a.project1)); assert.equal(a.project2,null);
+  assert.match(a.reason,/\. Said Minor but checked mostly Majors, so placed by what they checked\.$/);
+  assert.ok(a.flags.includes("Said Minor but placed in a Major they checked. Move them to two Minors on their grade tab if you'd rather."));
+  assert.equal(r.checks.find(c=>c.code==='MINOR_PREFERENCE_CHANGED').severity,'info');
+  // With the setting FALSE the student does Minors, as they said, and is flagged.
+  const off=E.sort(people,projects,cfg,choices);
+  assert.equal(track(off,'min'),'Minor');
+  assert.ok(off.assignments.find(x=>x.studentId==='min').flags.includes('Said Minor but checked fewer than two running Minors.'));
+});
+test('with followChecksOverTrack TRUE, a student who said Major and checked a Major that isn\'t running plus two Minors counts as disagreeing',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3}),people=[...fixed,s('x',{choices:['gone','m1','m2']})];
+  const r=E.sort(people,[...projects,p('gone','Major',{enabled:false})],follow(cfg),choices);
+  assert.equal(track(r,'x'),'Minor'); assert.deepEqual(r.summary.tracks,{disagree:1,followChecks:true});
+  // Running, the same Major counts, and x does the Major they said.
+  const running=E.sort(people,[...projects,p('gone')],{...follow(cfg),projectCount:9},{...choices,gone:{mustRun:true}});
+  assert.equal(track(running,'x'),'Major'); assert.deepEqual(running.summary.tracks,{disagree:0,followChecks:true});
+});
+test('followChecksOverTrack never changes a locked student, a leader or a student who checked nothing',()=>{
+  const {projects,cfg,fixed,choices}=leanRun({minorTarget:3}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);
+  // locked and leader said Major and checked only Minors, so they would disagree if they were free.
+  const people=[...fixed,s('locked',{choices:['m1','m2']}),s('leader',{choices:['m1','m2']}),s('none',{choices:[]}),s('noneMinor',{preference:'Minor',choices:[]})];
+  const locks=[{email:'locked@example.org',name:'',project1:'a',project2:'',row:2}],picks={...choices,b:{mustRun:true,leaders:['leader']}};
+  const off=E.sort(people,projects,cfg,picks,{locks}),on=E.sort(people,projects,follow(cfg),picks,{locks});
+  for(const id of ['locked','leader','none','noneMinor'])assert.deepEqual(at(on,id),at(off,id),id);
+  assert.deepEqual([at(on,'locked').project1,at(on,'leader').project1,track(on,'none'),track(on,'noneMinor')],['a','b','Major','Minor']);
+  assert.ok(![...on.assignments,...off.assignments].some(a=>a.flags.some(f=>/^Said /.test(f))));
+  assert.deepEqual([off.summary.tracks,on.summary.tracks],[{disagree:0,followChecks:false},{disagree:0,followChecks:true}]);
 });
 
 test('students who tie are ordered by a fixed shuffle of their ID and tieSeed, never by name or alphabet',()=>{
