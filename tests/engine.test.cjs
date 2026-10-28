@@ -253,3 +253,62 @@ test('the summary counts for each grade add up to the students placed in that gr
   // Some students landed in a project they didn't check, so the split is a real test.
   assert.ok([10,11,12].some(g=>r.summary.byGrade[g].major.notChecked+r.summary.byGrade[g].minor.oneChecked+r.summary.byGrade[g].minor.noneChecked>0));
 });
+
+test('a lock places a student exactly where the row says, before leaders and everyone else',()=>{
+  const {projects,cfg,others}=leaderRun();
+  // x asked for Minors and didn't check b; j1 is the listed leader of a. Both locks win.
+  const locks=[{email:'X@Example.org ',name:'',project1:'MAJ-b',project2:'MAJ-b',row:2},{email:'',name:'Practice j1',project1:'b',project2:'',row:3}];
+  const r=E.sort(others,projects,{...cfg,minorMin:1,minorTarget:2,minorMax:2},{a:{leaders:['j1']}},{locks}),at=id=>r.assignments.find(a=>a.studentId===id);
+  for(const id of ['x','j1']){assert.equal(at(id).project1,'b');assert.equal(at(id).project2,null);assert.equal(at(id).status,'placed');assert.match(at(id).reason,/^Placed here by Mr\. Litowitz\. /);}
+  assert.ok(!at('j1').flags.some(f=>/^Leading/.test(f)));
+  assert.equal(errors(r).length,0); assert.equal(r.issues.filter(i=>i.severity==='error').length,0);
+  // The other track is allowed: the checker notes it as information.
+  assert.equal(r.checks.find(c=>c.code==='MINOR_PREFERENCE_CHANGED'&&c.studentId==='x').severity,'info');
+});
+test('a lock that puts a group at 15 is kept and reported with the student\'s name',()=>{
+  const students=Array.from({length:16},(_,i)=>s('st'+String(i).padStart(2,'0'),{name:'Example '+i,grade:12}));
+  const locks=students.slice(0,15).map((st,i)=>({email:st.email,name:st.name,project1:'a',project2:'',row:i+2}));
+  const r=E.sort(students,[p('a'),p('b')],config({minSize:1,targetSize:8,maxSize:14,projectCount:2}),{},{locks});
+  assert.equal(r.assignments.filter(a=>a.project1==='a').length,15);
+  assert.ok(students.slice(0,15).every(st=>r.assignments.find(a=>a.studentId===st.id).project1==='a'));
+  const problems=r.issues.filter(i=>i.code==='LOCK_BREAKS_RULE');
+  assert.equal(problems.length,15); assert.ok(problems.every(i=>i.severity==='error'));
+  assert.match(problems[0].message,/^Example \d+ is locked into a, which has 15 students, over the maximum of 14\.$/);
+  assert.ok(r.checks.some(c=>c.code==='OVER_CAPACITY'&&c.projectId==='a'));
+});
+test('a rerun given the last run\'s placements gives identical groups',()=>{
+  const students=Array.from({length:88},(_,i)=>s('s'+i,{preference:i<44?'Minor':'Major',grade:10+i%3,choices:['m'+(i%8),'m'+((i+1)%8),'a'+(i%4)]}));
+  const projects=[...Array.from({length:8},(_,i)=>p('m'+i,'Minor')),...Array.from({length:4},(_,i)=>p('a'+i))];
+  const cfg={...E.defaults,projectCount:12,minorProjects:8,minorMin:40,minorTarget:44,minorMax:48,minSize:4};
+  const first=E.sort(students,projects,cfg,{}),again=E.sort(students,projects,cfg,{},{previous:first.assignments});
+  assert.deepEqual(again.assignments,first.assignments);
+});
+test('keeping last run\'s placement settles a tie but never beats a better fit',()=>{
+  // With seed 2026, drew wins a tie for the one seat in a (see the tie-order test).
+  const projects=[p('a'),p('b','Major',{types:['feet'],goals:['1']})],cfg=config({maxSize:1,targetSize:1});
+  const casey=s('casey@example.org',{email:'casey@example.org',grade:12,choices:['a','c']}),drew=s('drew@example.org',{email:'drew@example.org',grade:12,choices:['a','c']});
+  const previous=[{studentId:casey.id,project1:'a',project2:null},{studentId:drew.id,project1:'b',project2:null}];
+  const seat=r=>r.assignments.find(a=>a.project1==='a').studentId;
+  assert.equal(seat(E.sort([casey,drew],projects,cfg,{})),drew.id);
+  assert.equal(seat(E.sort([casey,drew],projects,cfg,{},{previous})),casey.id);
+  // If drew fits a better than casey does, fit wins over keeping casey's placement.
+  assert.equal(seat(E.sort([{...casey,goals:['9']},drew],projects,cfg,{},{previous})),drew.id);
+});
+test('lock rows find students by email, Student ID or name, and report names they cannot match',()=>{
+  const students=[s('jo@example.org',{email:'jo@example.org',name:'Smith, Jo'}),s('shared@example.org:lee-pat',{email:'shared@example.org',name:'Lee, Pat'}),s('shared@example.org:kim-sam',{email:'shared@example.org',name:'Kim, Sam'})];
+  const projects=[p('robotics','Major',{name:'Robotics'}),p('glass-fusing','Minor',{name:'Glass Fusing'})];
+  const info=E.locks(students,projects,[
+    {email:' JO@example.org',name:'',project1:'MAJ-Robotics',project2:'MAJ-Robotics',row:2},
+    {email:'shared@example.org:lee-pat',name:'',project1:'glass-fusing',project2:'',row:3},
+    {email:'',name:'Kim, Sam',project1:'Robotics',project2:'',row:4},
+    {email:'shared@example.org',name:'',project1:'Robotics',project2:'',row:5},
+    {email:'nobody@example.org',name:'',project1:'Robotics',project2:'',row:6},
+    {email:'jo@example.org',name:'',project1:'Robotics',project2:'',row:7},
+    {email:'',name:'Kim, Sam',project1:'Pottery',project2:'',row:8}]);
+  assert.deepEqual(info.byStudent['jo@example.org'],{project1:'robotics',project2:'robotics',row:2});
+  assert.deepEqual(info.byStudent['shared@example.org:lee-pat'],{project1:'glass-fusing',project2:null,row:3});
+  assert.deepEqual(info.byStudent['shared@example.org:kim-sam'],{project1:'robotics',project2:null,row:4});
+  assert.deepEqual(info.issues.map(i=>i.code),['LOCK_UNKNOWN_STUDENT','LOCK_UNKNOWN_STUDENT','LOCK_DUPLICATE','LOCK_UNKNOWN_PROJECT']);
+  assert.ok(info.issues.every(i=>i.severity==='error'));
+  assert.match(info.issues[3].message,/Locked placements row 8 \(Kim, Sam\): "Pottery" isn't a project name/);
+});

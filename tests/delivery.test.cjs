@@ -19,7 +19,8 @@ test('committed pasteable bundle matches shared source and keeps current-documen
     ['Catalog.gs','Parse.gs','Engine.gs','Main.gs'].map(file => fs.readFileSync(path.join(root, 'apps-script', file), 'utf8').trimEnd()).join('\n\n') + '\n';
   assert.equal(fs.readFileSync(path.join(root, 'paste-into-apps-script/ProjectPomfret.gs'), 'utf8'), expected);
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'apps-script/appsscript.json'), 'utf8'));
-  assert.deepEqual(manifest.oauthScopes, ['https://www.googleapis.com/auth/spreadsheets.currentonly']);
+  // The current spreadsheet, plus the user's email for Locked by and Run by.
+  assert.deepEqual(manifest.oauthScopes, ['https://www.googleapis.com/auth/spreadsheets.currentonly', 'https://www.googleapis.com/auth/userinfo.email']);
 });
 
 test('committed bundle runs practice, preparation, interest, sorting and recheck end to end', t => {

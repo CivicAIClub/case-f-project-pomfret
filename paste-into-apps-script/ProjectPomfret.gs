@@ -1107,12 +1107,55 @@ var PPEngine = (function () {
     return out;
   }
   function priorityOrder(run){return function(a,b){return Number(run.last(a))-Number(run.last(b))||b.grade-a.grade||run.tie.students(a,b);};}
-  function weight(s,base,run){return run.last(s)?1:Math.pow(base,s.grade===12?3:s.grade===11?2:1);}
+  function key(v){return String(v==null?'':v).toLowerCase().replace(/\s+/g,'');}
+  function plain(v){return String(v==null?'':v).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
+  function limit(p,cfg){return cfg.maxSize;}
+  // Rows from Locked placements. A student is found by email or Student ID, or by name when the
+  // email is blank. A project can be a name, an ID or a MAJ-/MIN- label from the grade tabs.
+  function resolveLocks(students,projects,rows){
+    var out={},issues=[],byKey={},byName={},byProject={};
+    function add(map,k,s){if(!k)return;map[k]=map[k]||[];if(map[k].indexOf(s)<0)map[k].push(s);}
+    students.forEach(function(s){add(byKey,key(s.id),s);add(byKey,key(s.email),s);add(byName,plain(s.name),s);});
+    arr(projects).forEach(function(p){byProject[key(p.id)]=p;byProject[plain(p.name)]=p;});
+    function project(token){var t=String(token==null?'':token).trim().replace(/^(MAJ|MIN)-/i,'');return t?byProject[key(t)]||byProject[plain(t)]||undefined:null;}
+    arr(rows).forEach(function(r){
+      var k=key(r.email),found=k?byKey[k]||[]:byName[plain(r.name)]||[],where='Locked placements row '+r.row;
+      if(!k&&!plain(r.name))return;
+      if(found.length!==1){issues.push(note('LOCK_UNKNOWN_STUDENT','error',where+': '+(found.length?'more than one student matches':'no student matches')+' "'+String(k?r.email:r.name).trim()+'", so the lock was not used.'));return;}
+      var st=found[0],who=st.name||st.id,p1=project(r.project1),p2=project(r.project2);
+      if(p1===undefined||p2===undefined){issues.push(note('LOCK_UNKNOWN_PROJECT','error',where+' ('+who+'): "'+String(p1===undefined?r.project1:r.project2).trim()+"\" isn't a project name, ID or MAJ-/MIN- label, so the lock was not used.",{studentId:st.id}));return;}
+      if(out[st.id]){issues.push(note('LOCK_DUPLICATE','error','Locked placements has more than one row for '+who+'. Row '+out[st.id].row+' was used.',{studentId:st.id}));return;}
+      out[st.id]={project1:p1?p1.id:null,project2:p2?p2.id:null,row:r.row};
+    });
+    return {byStudent:out,issues:issues};
+  }
+  // A lock with a Major in one column, or the same Major in both, is one Major. Any other lock stays
+  // exactly as Mr. Litowitz wrote it, and lockProblems reports the rules it breaks.
+  function lockShape(lock,byId){
+    var p1=lock.project1,p2=lock.project2,first;
+    if(!p1&&p2&&byId[p2].finalLength==='Major'){p1=p2;p2=null;}
+    if(p1&&p2===p1&&byId[p1].finalLength==='Major')p2=null;
+    first=byId[p1||p2];
+    return {project1:p1,project2:p2,track:first?first.finalLength:null};
+  }
+  // Locks whose projects all run in this pass. A lock into a project that isn't running is an
+  // error, and that student is placed by the normal rules.
+  function applyLocks(projects,issues,run){
+    var byId={},out={};projects.forEach(function(p){byId[p.id]=p;});
+    Object.keys(run.locks).sort(compare).forEach(function(id){
+      var lock=run.locks[id],st=run.byId[id],missing=[lock.project1,lock.project2].filter(function(pid){return pid&&!byId[pid];});
+      if(missing.length)issues.push(note('LOCK_NOT_RUNNING','error',(st.name||st.id)+' is locked into '+(run.names[missing[0]]||missing[0])+", which isn't running, so they were placed by the normal rules.",{studentId:id,projectId:missing[0]}));
+      else out[id]=lockShape(lock,byId);
+    });
+    return out;
+  }
   function cohort(students,projects,cfg,issues,run){
-    var priority=priorityOrder(run),leading=run.leading;
-    var active=students.filter(eligible),free=active.filter(function(s){return !leading[s.id];}),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
+    var priority=priorityOrder(run),leading=run.leading,locked=run.locked,lockedIds=Object.keys(locked);
+    var active=students.filter(function(s){return eligible(s)&&!locked[s.id];}),free=active.filter(function(s){return !leading[s.id];}),minors=projects.filter(function(p){return p.finalLength==='Minor';}),majors=projects.length-minors.length,running={};
     minors.forEach(function(p){running[p.id]=true;});
-    var lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,active.length-majors*cfg.maxSize),upper=Math.min(cfg.minorMax,minors.length*cfg.maxSize,active.length-majors*cfg.minSize);
+    // Locked students count toward the Minor target, and the cohort fills in around them.
+    var lockedMinor=lockedIds.filter(function(id){return locked[id].track==='Minor';}).length,placing=active.length+lockedIds.filter(function(id){return locked[id].track;}).length;
+    var lower=Math.max(cfg.minorMin,minors.length*cfg.minSize,placing-majors*cfg.maxSize),upper=Math.min(cfg.minorMax,minors.length*cfg.maxSize,placing-majors*cfg.minSize);
     if(lower>upper)issues.push(note('COHORT_CAPACITY','warning','The group sizes cannot fit the requested number of Minor students. Check the project list and Minor student targets.'));
     var desired=Math.max(0,Math.min(minors.length*cfg.maxSize,lower<=upper?Math.max(lower,Math.min(upper,cfg.minorTarget)):cfg.minorTarget)),minimum=Math.min(desired,lower);
     function minorChecks(s){return arr(s.choices).filter(function(id,i,all){return running[id]&&all.indexOf(id)===i;}).length;}
@@ -1120,11 +1163,11 @@ var PPEngine = (function () {
     // Minors fill the spots up to the target; ties go to sophomores, then juniors, then seniors.
     // A leader follows their project's length whatever they asked for.
     var minor=active.filter(function(s){return leading[s.id]&&leading[s.id].finalLength==='Minor';}).concat(free.filter(function(s){return s.preference==='Minor';}).sort(priority)),unknown=free.filter(function(s){return s.preference==='Not sure';}).sort(function(a,b){return minorChecks(b)-minorChecks(a)||a.grade-b.grade||Number(run.last(a))-Number(run.last(b))||run.tie.students(a,b);});
-    while(minor.length<desired&&unknown.length)minor.push(unknown.shift());
+    while(lockedMinor+minor.length<desired&&unknown.length)minor.push(unknown.shift());
     // Major-preference students move only while the Minor count is below its minimum.
-    if(cfg.allowMajorToMinor){var major=free.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(minor.length<minimum&&major.length)minor.push(major.shift());}
+    if(cfg.allowMajorToMinor){var major=free.filter(function(s){return s.preference==='Major';}).sort(function(a,b){return Number(run.last(a))-Number(run.last(b))||a.grade-b.grade||run.tie.students(a,b);});while(lockedMinor+minor.length<minimum&&major.length)minor.push(major.shift());}
     var members={};minor.forEach(function(s){members[s.id]=true;});
-    return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority)};
+    return {minor:minor.sort(priority),major:active.filter(function(s){return !members[s.id];}).sort(priority),lockedMinor:lockedMinor,lockedMajor:lockedIds.filter(function(id){return locked[id].track==='Major';}).length};
   }
   function quotas(count,projects,cfg,scores){
     var sorted=projects.slice().sort(function(a,b){return (scores[b.id]||0)-(scores[a.id]||0)||compare(a.id,b.id);}), result={};
@@ -1132,12 +1175,20 @@ var PPEngine = (function () {
     var n=Math.min(count,sorted.length*cfg.maxSize),base=Math.floor(n/sorted.length),extra=n%sorted.length;
     sorted.forEach(function(p,i){result[p.id]=base+(i<extra?1:0);});return result;
   }
-  // Successive shortest augmenting paths. Potentials make residual reverse edges
-  // usable with Dijkstra. All costs are integer and remain below MAX_SAFE_INTEGER.
-  function assignFlow(members,projects,cfg,choices,capacity,base,run){
-    var n=members.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[],total=0;
+  // Successive shortest augmenting paths. Potentials make residual reverse edges usable with
+  // Dijkstra. Costs, most important first: placing everyone, then seniors' fit, juniors' fit,
+  // sophomores' fit and the fit of students placed last, then keeping last run's placement. Each
+  // level outweighs everything below it can add up to, so keeping a placement never costs anyone
+  // fit or seniority. The tie order, through the order of the students, settles what is still equal.
+  function assignFlow(members,projects,cfg,choices,capacity,run){
+    var n=members.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[],total=0,levels=[0,0,0,0],most=1;
     function edge(u,v,cap,cost){var a={to:v,rev:graph[v].length,cap:cap,cost:cost,initial:cap},b={to:u,rev:graph[u].length,cap:0,cost:-cost,initial:0};graph[u].push(a);graph[v].push(b);return a;}
-    members.forEach(function(mem,i){var s=mem.s,w=weight(s,base,run);total+=mem.units;edge(0,1+i,mem.units,-6*w);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,(f.tier-1)*w);links.push({student:s.id,project:p.id,edge:e});}});});
+    function level(s){return run.last(s)?0:s.grade===12?3:s.grade===11?2:1;}
+    function kept(s,p){var before=run.previous[s.id];return before&&before.project1!==p.id&&before.project2!==p.id?1:0;}
+    members.forEach(function(mem){levels[level(mem.s)]++;total+=mem.units;most=Math.max(most,mem.units);});
+    var base=5*most*Math.max.apply(null,levels)+1,stable=total+1;
+    if(6*stable*Math.pow(base,3)*V>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
+    members.forEach(function(mem,i){var s=mem.s,w=Math.pow(base,level(s));edge(0,1+i,mem.units,-6*w*stable);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,(f.tier-1)*w*stable+kept(s,p));links.push({student:s.id,project:p.id,edge:e});}});});
     projects.forEach(function(p,j){edge(1+n+j,sink,capacity[p.id]||0,0);});
     var potential=Array(V).fill(Infinity);potential[0]=0;
     for(var k=0;k<V;k++){var changed=false;for(var u=0;u<V;u++){if(!isFinite(potential[u]))continue;graph[u].forEach(function(e){if(e.cap>0&&potential[e.to]>potential[u]+e.cost){potential[e.to]=potential[u]+e.cost;changed=true;}});}if(!changed)break;}
@@ -1154,23 +1205,33 @@ var PPEngine = (function () {
     }
     var result={};members.forEach(function(mem){result[mem.s.id]=[];});links.forEach(function(l){if(l.edge.cap===0)result[l.student].push(l.project);});return result;
   }
-  // Student pairs are edges between Minor projects. Euler orientation gives
-  // equal weekly sizes for complete even-degree quotas, or a difference of one
-  // for incomplete results. Dummy edges join odd vertices and are never output.
-  function orient(pairs,projects,run){
-    var adj={},edges=[],used={},oriented={};projects.forEach(function(p){adj[p.id]=[];});
-    function add(a,b,student){var i=edges.length;edges.push({a:a,b:b,student:student});adj[a].push(i);adj[b].push(i);}
-    Object.keys(pairs).sort(run.tie.ids).forEach(function(id){if(pairs[id].length===2)add(pairs[id][0],pairs[id][1],id);});
-    var odd=Object.keys(adj).filter(function(id){return adj[id].length%2;}).sort(compare);for(var i=0;i<odd.length;i+=2)add(odd[i],odd[i+1],null);
-    Object.keys(adj).sort(compare).forEach(function(start){
-      var stack=[start];while(stack.length){var from=stack[stack.length-1];while(adj[from].length&&used[adj[from][adj[from].length-1]])adj[from].pop();if(!adj[from].length){stack.pop();continue;}
-        var ei=adj[from].pop(),e=edges[ei];if(used[ei])continue;used[ei]=true;var to=e.a===from?e.b:e.a;if(e.student)oriented[e.student]=[from,to];stack.push(to);
+  // Week 1 or week 2 for each Minor student's two projects. Locked students' weeks are fixed. A
+  // student with the same two Minors as last run keeps last run's weeks; others start in whichever
+  // week is lighter. Then each project's two weeks are evened out, to differ by at most one where
+  // possible, by switching the weeks of a chain of students.
+  function orientWeeks(pairs,projects,run,fixed){
+    var d={},orient={},ids=Object.keys(pairs).filter(function(id){return pairs[id].length===2;}).sort(run.tie.ids);
+    projects.forEach(function(p){d[p.id]=fixed[p.id]?fixed[p.id][0]-fixed[p.id][1]:0;});
+    ids.forEach(function(id){
+      var a=pairs[id][0],b=pairs[id][1],before=run.previous[id],same=before&&before.project2&&[before.project1,before.project2].sort().join()===[a,b].sort().join();
+      var first=same?before.project1:d[a]<d[b]||(d[a]===d[b]&&compare(a,b)<=0)?a:b;
+      orient[id]=[first,first===a?b:a];d[orient[id][0]]++;d[orient[id][1]]--;
+    });
+    for(var round=0;round<10000;round++){
+      var from={},moved=false;projects.forEach(function(p){from[p.id]=[];});ids.forEach(function(id){from[orient[id][0]].push(id);});
+      var starts=projects.map(function(p){return p.id;}).filter(function(id){return d[id]>=1;}).sort(function(x,y){return d[y]-d[x]||compare(x,y);});
+      for(var k=0;k<starts.length&&!moved;k++){
+        var u=starts[k],step={},queue=[u],best=null;step[u]=null;
+        while(queue.length){var x=queue.shift();from[x].forEach(function(id){var y=orient[id][1];if(Object.prototype.hasOwnProperty.call(step,y))return;step[y]={at:x,student:id};queue.push(y);if(d[u]-d[y]>=3&&(best===null||d[y]<d[best]))best=y;});}
+        if(best!==null){for(var y=best;step[y];y=step[y].at){var sid=step[y].student;orient[sid]=[orient[sid][1],orient[sid][0]];}d[u]-=2;d[best]+=2;moved=true;}
       }
-    });return oriented;
+      if(!moved)break;
+    }
+    return orient;
   }
   // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
   // when Mr. Litowitz moves a student by hand. byHand drops the note about the Minor student minimum,
-  // which doesn't apply to a student placed on purpose (by hand or as a leader).
+  // which doesn't apply to a student placed on purpose (by hand, by a lock or as a leader).
   function explain(s,ids,projects,input,choices,byHand){
     var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
     var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
@@ -1178,16 +1239,26 @@ var PPEngine = (function () {
     return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
   }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
+  // A locked student goes exactly where their row says, even on the other track or in a project
+  // they didn't check. A lock with no projects keeps the student out of every group.
+  function lockedAssignment(s,lock,projects,cfg,choices){
+    var a=emptyAssignment(s),ids=[lock.project1,lock.project2].filter(Boolean),byId={};projects.forEach(function(p){byId[p.id]=p;});a.locked=true;
+    if(!ids.length){a.status='review';a.reason='Mr. Litowitz took this student out of every project, so they are not placed.';return a;}
+    var placement=explain(s,ids,projects,cfg,choices,true);
+    a.status='placed';a.project1=lock.project1;a.project2=lock.project2;a.fit1=lock.project1?fit(s,byId[lock.project1],cfg).tier:null;a.fit2=lock.project2?fit(s,byId[lock.project2],cfg).tier:null;
+    a.reason='Placed here by Mr. Litowitz. '+placement.reason;a.flags=placement.flags;return a;
+  }
   function allocate(students,projects,cfg,choices,scores,issues,run){
-    run.leading=leaders(students,projects,choices,issues,run);run.last=function(s){return placedLast(s,run);};
-    var groups=cohort(students,projects,cfg,issues,run),leading=run.leading,majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';}),base=6*Math.max(1,students.length*2)+1;
-    if(Math.pow(base,3)*6*students.length*2>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
-    // Leaders already fill part of their project, so the flow gets only the seats left over.
+    run.locked=applyLocks(projects,issues,run);
+    run.leading=leaders(students.filter(function(s){return !run.locked[s.id];}),projects,choices,issues,run);run.last=function(s){return placedLast(s,run);};
+    var groups=cohort(students,projects,cfg,issues,run),leading=run.leading,locked=run.locked,byId={},majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';});
+    projects.forEach(function(p){byId[p.id]=p;});
+    // Locks and leaders fill their seats first, so the flow gets only the seats left over.
     function solve(members,list,units,fixed,total){
       var quota=quotas(total,list,cfg,scores),assigned={},relaxed=false;
       for(var attempt=0;attempt<=cfg.maxSize;attempt++){
         var capacity={};list.forEach(function(p){capacity[p.id]=Math.max(0,quota[p.id]*units-(fixed[p.id]||0));});
-        assigned=assignFlow(members,list,cfg,choices,capacity,base,run);
+        assigned=assignFlow(members,list,cfg,choices,capacity,run);
         if(members.every(function(mem){return assigned[mem.s.id].length===mem.units;}))break;
         var expandable=list.filter(function(p){return quota[p.id]<cfg.maxSize;});if(!expandable.length)break;
         expandable.forEach(function(p){quota[p.id]++;});relaxed=true;
@@ -1195,40 +1266,70 @@ var PPEngine = (function () {
       if(relaxed)issues.push(note('QUOTA_RELAXED','info',(units===2?'Minor':'Major')+' groups could not all meet the balanced size targets because of project restrictions. They still stay within the maximum.'));
       return assigned;
     }
-    var fixedMajor={},fixedMinor={};Object.keys(leading).forEach(function(id){var f=leading[id].finalLength==='Minor'?fixedMinor:fixedMajor;f[leading[id].id]=(f[leading[id].id]||0)+1;});
+    var fixedMajor={},fixedMinor={},weeks={};
+    function seat(map,pid){map[pid]=(map[pid]||0)+1;}
+    Object.keys(locked).forEach(function(id){[locked[id].project1,locked[id].project2].forEach(function(pid,w){if(!pid)return;if(byId[pid].finalLength==='Major')seat(fixedMajor,pid);else{seat(fixedMinor,pid);(weeks[pid]||(weeks[pid]=[0,0]))[w]++;}});});
+    Object.keys(leading).forEach(function(id){seat(leading[id].finalLength==='Minor'?fixedMinor:fixedMajor,leading[id].id);});
     // A Major leader is set for both weeks. A Minor leader needs one more Minor, chosen by the normal rules.
     var majorMembers=groups.major.filter(function(s){return !leading[s.id];}).map(function(s){return {s:s,units:1,skip:null};});
     var minorMembers=groups.minor.map(function(s){return leading[s.id]?{s:s,units:1,skip:leading[s.id].id}:{s:s,units:2,skip:null};});
-    var mp=solve(majorMembers,majorProjects,1,fixedMajor,groups.major.length),np=solve(minorMembers,minorProjects,2,fixedMinor,groups.minor.length);
+    var mp=solve(majorMembers,majorProjects,1,fixedMajor,groups.major.length+groups.lockedMajor),np=solve(minorMembers,minorProjects,2,fixedMinor,groups.minor.length+groups.lockedMinor);
     Object.keys(leading).forEach(function(id){var p=leading[id];if(p.finalLength==='Major')mp[id]=[p.id];else np[id]=[p.id].concat(np[id]||[]);});
-    var oriented=orient(np,minorProjects,run);
+    var oriented=orientWeeks(np,minorProjects,run,weeks);
     var minorIds={};groups.minor.forEach(function(s){minorIds[s.id]=true;});
-    return students.map(function(s){var a=emptyAssignment(s);if(!eligible(s))return a;var pair=minorIds[s.id]?oriented[s.id]:mp[s.id];if(!pair||pair.length!==(minorIds[s.id]?2:1))return a;
+    return students.map(function(s){if(locked[s.id])return lockedAssignment(s,locked[s.id],projects,cfg,choices);
+      var a=emptyAssignment(s);if(!eligible(s))return a;var pair=minorIds[s.id]?oriented[s.id]:mp[s.id];if(!pair||pair.length!==(minorIds[s.id]?2:1))return a;
       var placement=explain(s,pair,projects,cfg,choices,!!leading[s.id]);a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;a.fit1=placement.fit1;a.fit2=placement.fit2;a.reason=placement.reason;a.flags=placement.flags;
       if(leading[s.id])a.flags.unshift('Leading '+leading[s.id].name+', so placed there.');else if(checkedCount(s)<=1)a.flags.push(checkedCount(s)?'Checked only one project, so placed after everyone else.':'Checked no projects, so placed after everyone else.');return a;
     });
   }
+  // A lock is kept even when it breaks a rule. Each broken rule is an error that names the student.
+  function lockProblems(projects,assignments,cfg,run){
+    var out=[],byId={},sizes={};projects.forEach(function(p){byId[p.id]=p;sizes[p.id]=[0,0];});
+    assignments.forEach(function(a){if(a.status!=='placed')return;if(sizes[a.project1])sizes[a.project1][0]++;if(a.project2&&sizes[a.project2])sizes[a.project2][1]++;});
+    assignments.forEach(function(a){
+      if(!a.locked)return;
+      var st=run.byId[a.studentId],who=st.name||st.id,p1=byId[a.project1],p2=byId[a.project2],first=p1||p2,extra={studentId:st.id};
+      if(!first){out.push(note('LOCKED_OUT','warning',who+' is locked out of every project in Locked placements, so they are not placed.',extra));return;}
+      if(p1&&p2&&p1.finalLength!==p2.finalLength)out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock mixes a Major and a Minor.",extra));
+      else if(first.finalLength==='Major'&&p1&&p2)out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has two different Majors, "+p1.name+' and '+p2.name+'.',extra));
+      else if(first.finalLength==='Minor'&&!(p1&&p2))out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has a Minor in only one week. A Minor student needs two different Minors.",extra));
+      else if(first.finalLength==='Minor'&&p1.id===p2.id)out.push(note('LOCK_BREAKS_RULE','error',who+"'s lock has "+p1.name+' in both weeks. A Minor student needs two different Minors.',extra));
+      [p1,p2].forEach(function(p,w){if(!p)return;var week=p.finalLength==='Major'?0:w,size=sizes[p.id][week],cap=limit(p,cfg);if(size>cap)out.push(note('LOCK_BREAKS_RULE','error',who+' is locked into '+p.name+(p.finalLength==='Minor'?', week '+(w+1):'')+', which has '+size+' students, over the maximum of '+cap+'.',{studentId:st.id,projectId:p.id}));});
+    });
+    return out;
+  }
   function counts(projects,assignments){var out={};projects.forEach(function(p){out[p.id]=[0,0];});assignments.forEach(function(a){if(a.status!=='placed')return;if(out[a.project1])out[a.project1][0]++;if(out[a.project2])out[a.project2][1]++;});return out;}
-  function sort(students,projects,input,choices){
+  // context is optional: {previous: last run's assignments, locks: rows from Locked placements}.
+  function sort(students,projects,input,choices,context){
+    context=context||{};
     var cfg=settings(input),seen={};students.forEach(function(s){if(!s.id||seen[s.id])throw new Error('Each student needs their own ID.');seen[s.id]=true;if(![10,11,12].includes(s.grade))throw new Error('Every student must have grade 10, 11, or 12.');});
-    var plan=propose(students,projects,cfg,choices),selected=plan.projects,issues=plan.issues.slice(),scores={},run={tie:tieOrder(students,cfg),allProjects:projects};interest(students,projects).forEach(function(r){scores[r.projectId]=r.checked*3+r.aligned;});
+    var plan=propose(students,projects,cfg,choices),selected=plan.projects,issues=plan.issues.slice(),scores={},run={tie:tieOrder(students,cfg),allProjects:projects,byId:{},names:{},previous:{}};interest(students,projects).forEach(function(r){scores[r.projectId]=r.checked*3+r.aligned;});
+    students.forEach(function(s){run.byId[s.id]=s;});projects.forEach(function(p){run.names[p.id]=p.name;});
+    arr(context.previous).forEach(function(a){if(a&&run.byId[a.studentId])run.previous[a.studentId]={project1:a.project1||null,project2:a.project2||null};});
+    var blocked=issues.some(function(x){return x.severity==='error';}),lockInfo=resolveLocks(students,projects,context.locks),lockProjects={};
+    run.locks=lockInfo.byStudent;issues=issues.concat(lockInfo.issues);
+    Object.keys(run.locks).forEach(function(id){[run.locks[id].project1,run.locks[id].project2].forEach(function(pid){if(pid)lockProjects[pid]=true;});});
     var assignments;
-    if(issues.some(function(x){return x.severity==='error';}))assignments=students.map(emptyAssignment);
+    if(blocked)assignments=students.map(emptyAssignment);
     else{
       for(var pass=0;pass<=projects.length;pass++){
         var passIssues=[];assignments=allocate(students,selected,cfg,choices,scores,passIssues,run);var occupancy=counts(selected,assignments);
-        var undersized=selected.filter(function(p){return !mandatory(p,choices)&&(occupancy[p.id][0]<cfg.minSize||(p.finalLength==='Minor'&&occupancy[p.id][1]<cfg.minSize));}).sort(function(a,b){return (scores[a.id]||0)-(scores[b.id]||0)||compare(a.id,b.id);});
+        // A project with a locked student is never cut.
+        var undersized=selected.filter(function(p){return !mandatory(p,choices)&&!lockProjects[p.id]&&(occupancy[p.id][0]<cfg.minSize||(p.finalLength==='Minor'&&occupancy[p.id][1]<cfg.minSize));}).sort(function(a,b){return (scores[a.id]||0)-(scores[b.id]||0)||compare(a.id,b.id);});
         // A Minor needs a second different project; never cut its final partner.
         var minorCount=selected.filter(function(p){return p.finalLength==='Minor';}).length;
         var candidate=undersized.find(function(p){return p.finalLength!=='Minor'||minorCount>2;});
         if(!candidate){issues=issues.concat(passIssues);break;}
         issues.push(note('PROJECT_CUT','warning',candidate.name+' was cut because a group was below '+cfg.minSize+' students. The app ran placements again.',{projectId:candidate.id}));selected=selected.filter(function(p){return p.id!==candidate.id;});
       }
+      issues=issues.concat(lockProblems(selected,assignments,cfg,run));
     }
     var checks=check(students,selected,assignments,cfg,choices),summary=summarize(students,selected,assignments);
     // Bind run provenance to decision inputs, without reading free-text comments.
     var inputs=students.map(function(s){return {id:s.id,grade:s.grade,status:s.status,preference:s.preference,choices:arr(s.choices).slice().sort(compare),types:arr(s.types).slice().sort(compare),goals:arr(s.goals).slice().sort(compare),previous:arr(s.previous).slice().sort(compare),previousKnown:s.previousKnown!==false,gender:s.gender||null};}).sort(function(a,b){return compare(a.id,b.id);});
-    return {assignments:assignments,projects:selected,issues:issues,checks:checks,summary:summary,fingerprint:fingerprint({settings:cfg,choices:choices||{},inputs:inputs,projects:selected,assignments:assignments.slice().sort(function(a,b){return compare(a.studentId,b.studentId);})})};
+    var locks={};Object.keys(run.locks).forEach(function(id){locks[id]=[run.locks[id].project1,run.locks[id].project2];});
+    return {assignments:assignments,projects:selected,issues:issues,checks:checks,summary:summary,fingerprint:fingerprint({settings:cfg,choices:choices||{},inputs:inputs,projects:selected,locks:locks,previous:run.previous,assignments:assignments.slice().sort(function(a,b){return compare(a.studentId,b.studentId);})})};
   }
   // Counts for PP Summary. For each grade: placed students, whether they got projects they checked
   // (a Minor student counts both weeks, one week or neither), and placements at each fit.
@@ -1253,8 +1354,8 @@ var PPEngine = (function () {
       else{if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));}
       if(p1)members[p1.id][0].push(s);if(p2)members[p2.id][1].push(s);
       [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
-      // A track change Mr. Litowitz made by hand is his decision, so it is information only.
-      var byHand=a.movedByHand===true?' Moved by hand.':'';
+      // A track change Mr. Litowitz made by hand or with a lock is his decision, so it is information only.
+      var byHand=a.locked===true?' Placed here by Mr. Litowitz.':a.movedByHand===true?' Moved by hand.':'';
       if(s.preference==='Minor'&&p1&&p1.finalLength==='Major')out.push(note('MINOR_PREFERENCE_CHANGED',byHand?'info':'warning','This student asked for Minors and received a Major.'+byHand,{studentId:s.id}));if(s.preference==='Major'&&p1&&p1.finalLength==='Minor')out.push(note('MAJOR_TO_MINOR',byHand?'info':cfg.allowMajorToMinor?'warning':'error','This student asked for a Major and received Minors.'+byHand,{studentId:s.id}));
     });
     students.forEach(function(s){if(!seen[s.id])out.push(note('MISSING_STUDENT','error','Student has no assignment or review row.',{studentId:s.id}));else if(seen[s.id]!==1)out.push(note('DUPLICATE_ASSIGNMENT','error','Student has more than one assignment row.',{studentId:s.id}));if(s.previousKnown===false&&eligible(s))out.push(note('PREVIOUS_UNAVAILABLE','warning','Past projects are missing for this student, so the app could not fully check for repeats.',{studentId:s.id}));});
@@ -1270,7 +1371,7 @@ var PPEngine = (function () {
     return out;
   }
   function fingerprint(value){function stable(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(stable).join(',')+']';return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';}var str=stable(value),h=2166136261;for(var i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return ('00000000'+(h>>>0).toString(16)).slice(-8);}
-  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,summarize:summarize,fingerprint:fingerprint};
+  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,summarize:summarize,locks:resolveLocks,fingerprint:fingerprint};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
 
@@ -1294,7 +1395,8 @@ var PPAdapter = (function () {
   };
   // Settings added after the first school trial. A sheet without these rows uses the default.
   var NEW_SETTINGS = ['tieSeed'];
-  var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed'];
+  var RUN_LOG_HEADERS = ['Time', 'Why', 'Fingerprint', 'Placed', 'Needs review', 'Errors', 'Warnings', 'Tie seed', 'Run by'];
+  var LOCK_HEADERS = ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'];
   function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
   function text(v) { return v == null ? '' : String(v).trim(); }
   function safeCell(v) {
@@ -1404,6 +1506,7 @@ var PPAdapter = (function () {
     seed('Project choices', ['Project ID', 'Project', 'Run', 'Final length', 'Must run', 'Leaders', "Can't run with"], projects.map(function (p) { return [p.id, p.name, '', '', false, '', '']; }));
     seed('Gender', ['Email', 'Gender'], []);
     seed('Status changes', ['Email', 'Name', 'Status', 'Why'], []);
+    seed('Locked placements', LOCK_HEADERS, []);
     seed('PP Run log', RUN_LOG_HEADERS, []);
     addColumns('PP Run log', RUN_LOG_HEADERS);
     return { message: 'Settings and decision tabs are ready. Existing values were preserved.' };
@@ -1596,13 +1699,82 @@ var PPAdapter = (function () {
   }
   function sort(reason) {
     reason = text(reason); if (!reason) throw new Error('A run reason is required. Explain the rule or client decision behind this run.');
+    setup();
+    var moves = saveMoves(), last = savedRun();
     var input = prepare(), config = settings(), decisions = choices(input.projects, input.students);
-    var result = PPEngine.sort(input.students, input.projects, config, decisions);
+    var context = { previous: last ? Object.keys(last.assignments).map(function (id) { return last.assignments[id]; }) : [], locks: readLocks() };
+    var result = PPEngine.sort(input.students, input.projects, config, decisions, context);
     snapshot(input, result, config, decisions);
     output(input, result);
     var allChecks = result.checks.concat(input.issues || [], result.issues || []);
-    appendRecord('PP Run log', { 'Time': new Date(), 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed });
+    appendRecord('PP Run log', { 'Time': new Date(), 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': activeUser() });
+    result.savedMoves = moves;
     return result;
+  }
+  function activeUser() {
+    try { return text(Session.getActiveUser().getEmail()) || 'unknown'; } catch (e) { return 'unknown'; }
+  }
+  function key(v) { return text(v).toLowerCase().replace(/\s+/g, ''); }
+  // The last run's placements, read without the checks readSnapshot makes, so saving moves still
+  // works after Settings, Project choices or the forms change. No snapshot means nothing to save.
+  function savedRun() {
+    var data = values('PP Run snapshot', false), run = { assignments: {}, students: {}, projects: [] };
+    if (data.length < 2) return null;
+    var header = data[0].map(text), kind = header.indexOf('Record type'), json = header.indexOf('JSON (do not edit)');
+    if (kind < 0 || json < 0) return null;
+    data.slice(1).forEach(function (r) {
+      var value, type = text(r[kind]);
+      try { value = JSON.parse(r[json]); } catch (_) { return; }
+      if (!value) return;
+      if (type === 'assignment') run.assignments[value.studentId] = value;
+      else if (type === 'student') run.students[value.id] = value;
+      else if (type === 'project') run.projects.push(value);
+    });
+    return Object.keys(run.assignments).length ? run : null;
+  }
+  function readLocks() {
+    return records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], false).map(function (r) {
+      return { email: text(r.Email), name: text(r.Name), project1: text(r['Project 1']), project2: text(r['Project 2']), row: r._row };
+    });
+  }
+  // The Email column holds the student's email, or their Student ID when the email is missing or
+  // shared with another student.
+  function lockKey(s) { return s.email && s.id === s.email ? s.email : s.id; }
+  // Mr. Litowitz moves students by changing Project #1 or #2 in the grade tabs. Every student whose
+  // cells differ from the last run gets a row in Locked placements, so the move survives a rerun.
+  // A row that already says the same thing is left alone.
+  function saveMoves() {
+    var saved = savedRun(), count = 0;
+    if (!saved) return 0;
+    var tab = sheet('Locked placements', true), header = values('Locked placements', true)[0].map(text), rows = records('Locked placements', ['Email', 'Name', 'Project 1', 'Project 2'], true), tokens = {}, by = activeUser(), when = new Date();
+    saved.projects.forEach(function (p) { tokens[projectToken(p.id, saved.projects)] = p.id; tokens[p.id.toLowerCase()] = p.id; tokens[p.name.toLowerCase()] = p.id; });
+    function read(cell) { cell = text(cell); return cell ? tokens[cell] || tokens[cell.replace(/^(MAJ|MIN)-/i, '').toLowerCase()] || cell : null; }
+    function placement(one, two) {
+      var p1 = read(one), p2 = read(two);
+      if (p2 === p1 && lengthOf(p1, saved.projects) === 'Major') p2 = null;
+      else if (!p1 && lengthOf(p2, saved.projects) === 'Major') { p1 = p2; p2 = null; }
+      return [p1, p2];
+    }
+    [12, 11, 10].forEach(function (grade) {
+      records(masterName(grade), ['Student ID', 'Project #1', 'Project #2'], false).forEach(function (r) {
+        var id = text(r['Student ID']), before = saved.assignments[id], s = saved.students[id];
+        if (!before || !s) return;
+        var one = text(r['Project #1']), two = text(r['Project #2']), now = placement(one, two);
+        if (now[0] === (before.project1 || null) && now[1] === (before.project2 || null)) return;
+        var found = rows.filter(function (row) { return key(row.Email) ? key(row.Email) === key(lockKey(s)) : text(row.Name).toLowerCase() === text(s.name).toLowerCase(); })[0];
+        if (found && placement(found['Project 1'], found['Project 2']).join() === now.join()) return;
+        var cells = { 'Email': lockKey(s), 'Name': s.name, 'Project 1': one, 'Project 2': two, 'Locked by': by, 'When': when, 'Why': 'Moved by hand' };
+        if (found) {
+          Object.keys(cells).forEach(function (h) { if (header.indexOf(h) >= 0) tab.getRange(found._row, header.indexOf(h) + 1).setValue(safeCell(cells[h])); });
+          found['Project 1'] = one; found['Project 2'] = two;
+        } else {
+          appendRecord('Locked placements', cells);
+          rows.push({ _row: tab.getLastRow(), Email: cells.Email, Name: cells.Name, 'Project 1': one, 'Project 2': two });
+        }
+        count++;
+      });
+    });
+    return count;
   }
   function readSnapshot() {
     var state = { students: [], projects: [], sourceProjects: [], assignments: [], inputIssues: [], runIssues: [] };
@@ -1626,8 +1798,28 @@ var PPAdapter = (function () {
     if (PPEngine.fingerprint({ inputIssues: state.inputIssues, runIssues: state.runIssues }) !== state.findingsFingerprint) throw new Error('PP Run snapshot findings changed after the run. Rerun Sort to restore a consistent baseline.');
     return state;
   }
+  function savedMessage(n) { return n ? 'Saved ' + n + (n === 1 ? ' move' : ' moves') + ". They'll stay put when you sort again." : ''; }
+  // A row in Locked placements that the grade tab doesn't show yet, such as one typed by hand.
+  function lockDifferences(state, current) {
+    if (!PPEngine.locks) return [];
+    var byId = {}, names = {}, out = [], info = PPEngine.locks(state.students, state.sourceProjects, readLocks());
+    current.forEach(function (a) { byId[a.studentId] = a; });
+    state.students.forEach(function (s) { names[s.id] = s.name || s.id; });
+    Object.keys(info.byStudent).sort().forEach(function (id) {
+      var lock = info.byStudent[id], a = byId[id], p1 = lock.project1, p2 = lock.project2;
+      if (!a) return;
+      if (p2 === p1 && lengthOf(p1, state.projects) === 'Major') p2 = null;
+      else if (!p1 && lengthOf(p2, state.projects) === 'Major') { p1 = p2; p2 = null; }
+      if (p1 !== a.project1 || p2 !== a.project2) out.push({ severity: 'warning', code: 'lock_differs', studentId: id, message: names[id] + " has a row in Locked placements that the grade tab doesn't show. Sort again to apply it, or delete the row to unlock them." });
+    });
+    return out.concat(info.issues);
+  }
   function checkAgain() {
-    var state = readSnapshot(), baseline = {}, checks = [], current = [], known = {}, tokenMap = {};
+    setup();
+    var moves = saveMoves(), state;
+    // Moves are saved before anything can stop Check again.
+    try { state = readSnapshot(); } catch (e) { if (moves) e.message = savedMessage(moves) + ' ' + e.message; throw e; }
+    var baseline = {}, checks = [], current = [], known = {}, tokenMap = {};
     state.assignments.forEach(function (a) { baseline[a.studentId] = a; });
     state.students.forEach(function (s) { known[s.id] = s; });
     state.projects.forEach(function (p) { tokenMap[projectToken(p.id, state.projects)] = p.id; });
@@ -1654,7 +1846,7 @@ var PPAdapter = (function () {
       var tab = masterName(grade), header = values(tab, true)[0].map(text);
       records(tab, MASTER_HEADERS, true).forEach(function (r) {
         var id = text(r['Student ID']), original = baseline[id], student = known[id], one = text(r['Project #1']), two = text(r['Project #2']);
-        var a = { studentId: id, project1: one ? tokenMap[one] || one : null, project2: two ? tokenMap[two] || two : null, status: text(r.Status), reason: text(r.Reason), flags: [], fit1: null, fit2: null };
+        var a = { studentId: id, project1: one ? tokenMap[one] || one : null, project2: two ? tokenMap[two] || two : null, status: text(r.Status), reason: text(r.Reason), flags: text(r['Review flags']) ? text(r['Review flags']).split('; ') : [], fit1: null, fit2: null };
         // A Major is one MAJ- label: in both columns, or in one column with the other blank.
         if (a.project2 === a.project1 && lengthOf(a.project1, state.projects) === 'Major') a.project2 = null;
         else if (!a.project1 && lengthOf(a.project2, state.projects) === 'Major') { a.project1 = a.project2; a.project2 = null; }
@@ -1690,12 +1882,15 @@ var PPAdapter = (function () {
     // Recheck current master cells, but retain source and project-selection
     // findings from the saved run. Reading the previous PP Check would both
     // retain obsolete assignment failures and accumulate repeated warnings.
-    checks = checks.concat(PPEngine.check(state.students, state.projects, current, state.settings, state.choices), state.inputIssues, state.runIssues);
+    checks = checks.concat(PPEngine.check(state.students, state.projects, current, state.settings, state.choices), state.inputIssues, state.runIssues, lockDifferences(state, current));
     try {
       var live = readInputs(), currentSettings = settings(), currentChoices = choices(live.projects, live.students);
       if (PPEngine.fingerprint({ students: live.students, projects: live.projects, settings: currentSettings, choices: currentChoices }) !== state.inputFingerprint) checks.push({ severity: 'warning', code: 'stale_inputs', message: 'Inputs or settings changed after Sort. These checks use the saved run rules. Run Sort again to apply the current inputs.' });
     } catch (e) { checks.push({ severity: 'warning', code: 'current_input_error', message: 'The saved run was checked, but current inputs could not be compared: ' + e.message }); }
+    // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
+    writeResults(state.students, { assignments: current, projects: state.projects, summary: PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current) : {}, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
     writeIssues('PP Check', checks);
+    checks.savedMoves = moves;
     return checks;
   }
   function practice() {
@@ -1713,7 +1908,7 @@ var PPAdapter = (function () {
     setup();
     return { message: 'Created 240 invented students. No real student records were used.' };
   }
-  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, masterHeaders: MASTER_HEADERS };
+  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
 }());
 
 function onOpen() {
@@ -1724,18 +1919,20 @@ function PP_withLock(action) {
   if (!lock.tryLock(1000)) throw new Error('Another person is running the program. Wait for that run to finish.');
   try { return action(); } finally { lock.releaseLock(); }
 }
+// message can be a function of what the action returns.
 function PP_menu(action, message) {
-  try { PP_withLock(action); SpreadsheetApp.getUi().alert(message); }
+  try { var result = PP_withLock(action); SpreadsheetApp.getUi().alert(typeof message === 'function' ? message(result) : message); }
   catch (e) { SpreadsheetApp.getUi().alert('Project: Pomfret stopped\n\n' + e.message); }
 }
+function PP_saved(n) { return n ? PPAdapter.savedMessage(n) + '\n\n' : ''; }
 function PP_setup() { PP_menu(PPAdapter.setup, 'Setup is ready. Existing settings were preserved.'); }
 function PP_prepare() { PP_menu(PPAdapter.prepare, 'Read PP Students and PP Input check before counting interest.'); }
 function PP_interest() { PP_menu(PPAdapter.interest, 'Read PP Interest and PP Project check. Final choices belong in Project choices.'); }
-function PP_check() { PP_menu(PPAdapter.checkAgain, 'PP Check now checks the grade tabs against the saved run. Students moved by hand have a new Fit, Reason and flags.'); }
+function PP_check() { PP_menu(PPAdapter.checkAgain, function (checks) { return PP_saved(checks.savedMoves) + 'PP Check now checks the grade tabs against the saved run. Students moved by hand have a new Fit, Reason and flags, and the group tabs, PP Summary and PP Needs you match the grade tabs.'; }); }
 function PP_practice() { PP_menu(PPAdapter.practice, 'Practice data is ready. Run Prepare students, Count interest, then Sort.'); }
 function PP_sort() {
   var ui = SpreadsheetApp.getUi(), response = ui.prompt('Why are you running the sort?', 'Describe the rule or client decision for PP Run log.', ui.ButtonSet.OK_CANCEL);
   if (response.getSelectedButton() !== ui.Button.OK) return;
-  PP_menu(function () { PPAdapter.sort(response.getResponseText()); }, 'Proposed groups are ready. Read PP Summary, PP Check and PP Needs you.');
+  PP_menu(function () { return PPAdapter.sort(response.getResponseText()); }, function (result) { return PP_saved(result.savedMoves) + 'Proposed groups are ready. Read PP Summary, PP Check and PP Needs you.'; });
 }
 if (typeof module !== 'undefined' && module.exports) module.exports = PPAdapter;

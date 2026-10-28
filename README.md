@@ -52,7 +52,7 @@ Use an **empty scratch spreadsheet** with practice data first. This trial has no
 
 1. Run `npm run bundle`.
 2. In the spreadsheet's bound Apps Script project, replace `Code.gs` with the entire `paste-into-apps-script/ProjectPomfret.gs`. Do not also add the separate generated modules.
-3. Enable the manifest in Apps Script project settings and use `apps-script/appsscript.json`. Its only OAuth scope is the current spreadsheet.
+3. Enable the manifest in Apps Script project settings and use `apps-script/appsscript.json`. It asks for two permissions: the current spreadsheet, and your email address, which fills in Locked by and Run by.
 4. Save and reload the spreadsheet. Select **Project: Pomfret → Make practice data**. This refuses to run if any sheet contains data.
 5. Run **Prepare students**, **Count interest**, then **Sort** with a reason. Read `PP Interest`, `PP Summary`, `PP Check` and `PP Needs you` before using the grade masters or project rosters.
 

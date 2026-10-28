@@ -37,7 +37,8 @@ function fixture(useRealCore = false) {
   let released = 0;
   const context = vm.createContext({ module: { exports: {} }, PPParser: useRealCore ? require('../core/parser.js') : parser, PPEngine: useRealCore ? require('../core/engine.js') : engine, PPCatalog: useRealCore ? require('../core/catalog.js') : catalog,
     SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, newDataValidation },
-    LockService: { getDocumentLock: () => ({ tryLock: () => true, releaseLock: () => released++ }) }, Date, console });
+    LockService: { getDocumentLock: () => ({ tryLock: () => true, releaseLock: () => released++ }) },
+    Session: { getActiveUser: () => ({ getEmail: () => 'teacher@example.org' }) }, Date, console });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/Main.gs'), 'utf8'), context);
   const adapter = context.module.exports;
   function source() {
@@ -405,4 +406,111 @@ test('PP Summary shows each grade\'s placements, and PP Seniors to check lists s
   assert.deepEqual(listed[0], ['Name', 'Email', 'Project #1', 'Project #2', 'Reason']);
   assert.ok(expected.includes('practice1@example.org'));
   assert.deepEqual(listed.slice(1).map(r => r[1]).sort(), expected);
+});
+
+
+const lockRows = f => f.sheets.get('Locked placements').data;
+// Move a placed student to another running Major, the way Mr. Litowitz does in the grade tab.
+function moveToMajor(f, run, pick) {
+  const target = run.projects.find(p => p.finalLength === 'Major' && p.id !== pick.a.project1 && p.id !== pick.a.project2);
+  pick.row[2] = pick.row[3] = label(target);
+  return target;
+}
+test('Check again saves each move to Locked placements, and Sort keeps it there', () => {
+  const { f, run } = practiceRun('Locks practice'), pick = placedRows(f, run).find(x => x.tab === 'PP Junior');
+  const target = moveToMajor(f, run, pick), checks = f.adapter.checkAgain();
+  assert.equal(checks.savedMoves, 1);
+  assert.equal(f.adapter.savedMessage(1), "Saved 1 move. They'll stay put when you sort again.");
+  const rows = lockRows(f);
+  assert.deepEqual(rows[0], ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why']);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1].slice(0, 5), [pick.row[0], pick.s.name, label(target), label(target), 'teacher@example.org']);
+  assert.ok(rows[1][5] instanceof Date); assert.equal(rows[1][6], 'Moved by hand');
+  // Check again again finds nothing new to save.
+  assert.equal(f.adapter.checkAgain().savedMoves, 0);
+  const result = f.adapter.sort('Rerun after a move'), a = result.assignments.find(x => x.studentId === pick.row[0]);
+  assert.equal(result.savedMoves, 0);
+  assert.equal(a.project1, target.id); assert.match(a.reason, /^Placed here by Mr\. Litowitz\. /);
+  const log = f.sheets.get('PP Run log').data;
+  assert.equal(log[log.length - 1][log[0].indexOf('Run by')], 'teacher@example.org');
+});
+test('Sort saves moves first, so a move is kept even without Check again', () => {
+  const { f, run } = practiceRun('Locks practice'), pick = placedRows(f, run).find(x => x.a.project2);
+  const target = moveToMajor(f, run, pick), result = f.adapter.sort('Rerun without Check again');
+  assert.equal(result.savedMoves, 1);
+  assert.equal(result.assignments.find(x => x.studentId === pick.row[0]).project1, target.id);
+  assert.equal(lockRows(f).length, 2);
+});
+test('a locked student stays put when a better project appears, and moves once the lock is deleted', () => {
+  let { f, run } = practiceRun('Before the lock'), pick = placedRows(f, run).find(x => x.tab === 'PP Senior' && !x.a.project2);
+  const id = pick.row[0], locked = moveToMajor(f, run, pick);
+  f.adapter.sort('Lock by hand');
+  // The student now checks two other projects and matches the first one's Type and goal, so it fits far better.
+  const better = run.projects.filter(p => p.finalLength === 'Major' && p.id !== locked.id && p.id !== pick.a.project1);
+  const source = f.sheets.get('Senior').data.find(r => r[1] === id);
+  source[7] = better[0].name + '; ' + better[1].name; source[5] = better[0].types[0]; source[4] = better[0].goals[0];
+  let result = f.adapter.sort('Answers changed');
+  assert.equal(result.assignments.find(x => x.studentId === id).project1, locked.id);
+  const rows = lockRows(f); rows.splice(rows.findIndex(r => r[0] === id), 1);
+  result = f.adapter.sort('Lock deleted');
+  assert.notEqual(result.assignments.find(x => x.studentId === id).project1, locked.id);
+  assert.ok(realEngine.fit(saved(f).students.get(id), run.projects.find(p => p.id === result.assignments.find(x => x.studentId === id).project1), run.settings).tier < 5);
+});
+test('a rerun with nothing changed gives identical groups', () => {
+  const { f } = practiceRun('First run'), tabs = () => [...f.sheets.keys()].filter(n => /^PP (Senior|Junior|Sophomore|Group \d{2} .+)$/.test(n)).sort().map(n => JSON.stringify([n, f.sheets.get(n).data]));
+  const before = tabs(), result = f.adapter.sort('Same inputs again');
+  assert.deepEqual(tabs(), before);
+  assert.equal(result.savedMoves, 0);
+});
+test('Check again rebuilds the group tabs, PP Summary and PP Needs you from the grade tabs without sorting', () => {
+  const { f, run } = practiceRun('Rebuild practice'), pick = placedRows(f, run).find(x => x.a.project2);
+  const target = moveToMajor(f, run, pick), registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const summary = () => new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  const majors = summary().get('Major students'), snapshot = JSON.stringify(f.sheets.get('PP Run snapshot').data);
+  f.adapter.checkAgain();
+  assert.ok(f.sheets.get(registry.get(target.id)).data.some(r => r[3] === pick.row[0] && r[0] === 'Both weeks'));
+  assert.ok(!f.sheets.get(registry.get(pick.a.project1)).data.some(r => r[3] === pick.row[0]));
+  assert.equal(summary().get('Major students'), majors + 1);
+  assert.equal(summary().get('Review status'), 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+  assert.ok(f.sheets.get('PP Needs you').data.length > 1);
+  assert.equal(JSON.stringify(f.sheets.get('PP Run snapshot').data), snapshot);
+});
+test('saving moves still works after Settings, Project choices or the forms change', () => {
+  const { f, run } = practiceRun('Before the changes'), pick = placedRows(f, run).find(x => x.tab === 'PP Sophomore');
+  f.sheets.get('Settings').data.find(r => r[0] === 'minSize')[1] = 7;
+  f.sheets.get('Project choices').data[1][2] = false;
+  f.sheets.get('Junior').data[1][2] = 'Changed practice name';
+  moveToMajor(f, run, pick);
+  const checks = f.adapter.checkAgain();
+  assert.equal(checks.savedMoves, 1);
+  assert.ok(checks.some(c => c.code === 'stale_inputs'));
+  // A damaged snapshot still stops Check again, but the move is saved first.
+  const g = practiceRun('Damaged snapshot'), other = placedRows(g.f, g.run)[0];
+  moveToMajor(g.f, g.run, other);
+  const row = g.f.sheets.get('PP Run snapshot').data.find(r => r[0] === 'student'), changed = JSON.parse(row[2]);
+  changed.grade = 10; row[2] = JSON.stringify(changed);
+  assert.throws(() => g.f.adapter.checkAgain(), /^Error: Saved 1 move\. .*snapshot inputs changed/);
+  assert.equal(lockRows(g.f).length, 2);
+});
+test('there is nothing to save before the first Sort', () => {
+  const f = fixture(true); f.adapter.practice();
+  assert.equal(f.adapter.sort('First run').savedMoves, 0);
+  assert.equal(lockRows(f).length, 1);
+});
+test('Setup keeps hand-typed rows in Locked placements; Sort uses them and reports names it cannot match', () => {
+  const f = fixture(true); f.adapter.practice();
+  const typed = [['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'],
+    ['', 'Practice Student 001', 'Model UN', '', 'Mr. Litowitz', '', 'Asked to stay with his advisor'],
+    ['PRACTICE2@example.org', '', 'model-un', 'model-un', 'Mr. Litowitz', '', ''],
+    ['practice3@example.org', 'Practice Student 003', 'Underwater Basket Weaving', '', '', '', '']];
+  f.sheets.set('Locked placements', new Sheet('Locked placements', typed.map(r => r.slice())));
+  f.adapter.setup();
+  assert.deepEqual(lockRows(f), typed);
+  const result = f.adapter.sort('Hand-typed locks');
+  const at = id => result.assignments.find(a => a.studentId === id);
+  assert.ok(result.projects.some(p => p.id === 'model-un'));
+  assert.equal(at('practice1@example.org').project1, 'model-un');
+  assert.equal(at('practice2@example.org').project1, 'model-un');
+  assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'LOCK_UNKNOWN_PROJECT' && /Underwater Basket Weaving/.test(r[2])));
+  assert.deepEqual(lockRows(f), typed);
 });
