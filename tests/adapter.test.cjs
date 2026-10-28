@@ -60,6 +60,7 @@ function saved(f) {
   return run;
 }
 const GRADE_TABS = ['PP Senior', 'PP Junior', 'PP Sophomore'];
+const INPUT_TABS = { 12: 'Senior', 11: 'Junior', 10: 'Sophomore' };
 test('setup preserves existing source, settings and project decisions', () => {
   const f = fixture(); f.source(); f.adapter.setup();
   f.sheets.get('Settings').data[1][1] = 9;
@@ -347,7 +348,7 @@ test('Check again reports groups that hand moves push over the maximum or under 
   assert.ok(checks.some(c => c.code === 'OVER_CAPACITY' && c.severity === 'error' && c.projectId === to.id));
   assert.ok(checks.some(c => c.code === 'UNDER_MINIMUM' && c.severity === 'error' && c.projectId === from.id));
 });
-test('Check again reports a hand move into last year\'s project as information, with a flag', () => {
+test('Check again reports a hand move into last year\'s project as information', () => {
   let { f, run } = practiceRun('Before the last-year answer');
   const first = placedRows(f, run).find(x => x.tab === 'PP Junior' && !x.a.project2), id = first.row[0];
   const to = run.projects.find(p => p.finalLength === 'Major' && p.id !== first.a.project1);
@@ -361,7 +362,9 @@ test('Check again reports a hand move into last year\'s project as information, 
   assert.deepEqual(checks.map(c => [c.severity, c.message]), [['info', "In last year's project because of a move by hand."]]);
   assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'info' && r[1] === 'PREVIOUS_PROJECT' && r[3] === id));
   assert.ok(!f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'PREVIOUS_PROJECT'));
-  assert.match(f.sheets.get('PP Junior').data.find(r => r[0] === id)[8], /In last year's project because of a move by hand\./);
+  // The flag is information, so Review flags and PP Needs you leave it out.
+  assert.doesNotMatch(f.sheets.get('PP Junior').data.find(r => r[0] === id)[8], /last year's project/);
+  assert.ok(!f.sheets.get('PP Needs you').data.some(r => /last year's project/.test(r[5])));
 });
 test('Check again reports a gender rule a hand move breaks when gender data exists', () => {
   const odd = 'practice1@example.org';
@@ -797,8 +800,11 @@ test('the sentence saying why a student didn\'t get a pick shows in PP Master li
   const rowFor = (tab, column) => f.sheets.get(tab).data.find(r => r[column] === name);
   assert.equal(rowFor('PP Master list', 0)[5], reason);
   assert.equal(rowFor(registry.get(a.project1), 0)[3], reason);
-  assert.equal(rowFor('PP Needs you', 1)[4], reason);
   assert.equal(rowFor('PP Seniors to check', 0)[4], reason);
+  // PP Needs you shows each listed student's reason, and some of those say why they missed a pick.
+  const needs = f.sheets.get('PP Needs you').data.slice(1);
+  for (const r of needs) assert.equal(r[4], run.assignments.get(r[0]).reason);
+  assert.ok(needs.some(r => / None of their picks are running: .*\.| Their other picks were full\./.test(r[4])));
   assert.equal(f.sheets.get('PP Senior').data.find(r => r[0] === id)[7], reason);
 });
 
@@ -841,4 +847,60 @@ test('a Gender row saying Nonbinary reaches the sheet as written: counted as nei
   const split = v => String(v).split(' / ').map(Number), sizes = p.finalLength === 'Minor' ? [row[4], row[5]] : [row[4]];
   assert.equal(split(row[6])[0] + split(row[7])[0], sizes[0] - 1 - (run.assignments.get(rows[rows.length - 1][0]).project1 === p.id ? 1 : 0));
   for (const tab of ['PP Check', 'PP Input check']) assert.ok(!f.sheets.get(tab).data.some(r => /unknown/i.test(String(r[2]))), tab);
+});
+
+test('every flag is either information or needs a decision, and anything not on the information list needs a decision', () => {
+  const f = fixture(true), decide = flag => f.adapter.needsDecision(flag);
+  const information = ['Historical project not on current list; no renamed-project equivalence was assumed.', 'Latest timestamped submission retained; 1 older submission(s) removed.',
+    'Green status: the app considered this student after everyone else.', 'Checked only one project, so placed after everyone else.', 'Checked no projects, so placed after everyone else.',
+    'Only one current project was checked; there is no priority bonus for a narrow choice.', 'Leading Cinderella, so placed there.', 'Previous-project exception: named leader of Cinderella.',
+    "In last year's project because of a lock.", "In last year's project because of a move by hand.", 'Moved to another group to balance the groups.',
+    'Swapped with a student in another group to balance the groups.', 'Swapped into this group so classmates who asked to work together could, with no worse fit.'];
+  const decisions = ["Said Major but placed in Minors they checked. Move them to a Major on their grade tab if you'd rather.", "Said Minor but placed in a Major they checked. Move them to two Minors on their grade tab if you'd rather.",
+    'Said Major but checked no running Major.', 'Said Minor but checked fewer than two running Minors.', 'Fit 6: review the placement.',
+    'Two students sent their forms from the same email. Check that both answers are right.', 'Valid email is missing; reconcile this roster entry.', 'No response: check.', 'No current running project was checked.',
+    // Not on either list, so they need a decision.
+    'This student asked for a Major but received Minors to reach the Minor student minimum.', 'Past project information is missing.', 'Moved because a classmate asked not to work with them.',
+    'Moved to another group because of a "Not with" friend request. Fit dropped 2 steps.', "Couldn't match last year's project: Robotics club.", "No answer about last year's project.",
+    'No recognized project Type.', 'No recognized UN goal.', "An older form from this email gave the name differently. Check it's the same student.", "Matched a hand-typed row by last name only. Check it's the same student.",
+    'Status changed: Back from the trip', 'The Gender tab lists this student with different values, so they are not counted as Male or Female.'];
+  assert.deepEqual(information.filter(decide), []);
+  assert.deepEqual(decisions.filter(x => !decide(x)), []);
+});
+
+test('PP Needs you and Review flags show only flags that need a decision; PP Students and the snapshot keep every flag; Check again keeps it that way', () => {
+  const f = fixture(true); f.adapter.practice();
+  const first = f.adapter.sort('Find the students'), plain = saved(f), students = [...plain.students.values()];
+  const clean = students.find(s => s.grade === 12 && !plain.assignments.get(s.id).flags.length && !s.issues.length);
+  const fit6 = students.find(s => plain.assignments.get(s.id).flags.join() === 'Fit 6: review the placement.' && !s.issues.length);
+  const review = students.find(s => s.grade === 11 && s !== fit6);
+  // A retired project as last year's answer adds only the historical-project issue, and a leader gets
+  // only the leader flag. A person puts a third student in review.
+  for (const s of [clean, fit6]) f.sheets.get(INPUT_TABS[s.grade]).data.find(r => r[1] === s.id)[3] = 'Escape Room';
+  // The leader leads a Major they checked, so the only new flag is the leader flag.
+  const leader = students.find(s => s.grade === 10 && s !== fit6 && !plain.assignments.get(s.id).flags.length && !s.issues.length && first.projects.some(p => p.finalLength === 'Major' && s.choices.includes(p.id)));
+  const led = first.projects.find(p => p.finalLength === 'Major' && leader.choices.includes(p.id));
+  f.sheets.get('Project choices').data.find(r => r[0] === led.id)[5] = leader.id;
+  f.sheets.get('Status changes').data.push([review.id, '', 'review', 'Check this student']);
+  f.adapter.sort('Decisions only');
+  const run = saved(f), needs = () => new Map(f.sheets.get('PP Needs you').data.slice(1).map(r => [r[0], r[5]]));
+  const reviewFlags = s => f.sheets.get(['', '', '', '', '', '', '', '', '', '', 'PP Sophomore', 'PP Junior', 'PP Senior'][s.grade]).data.find(r => r[0] === s.id)[8];
+  const historical = 'Historical project not on current list; no renamed-project equivalence was assumed.';
+  const check = () => {
+    const listed = needs();
+    assert.ok(!listed.has(clean.id)); assert.equal(reviewFlags(clean), '');
+    assert.equal(listed.get(fit6.id), 'Fit 6: review the placement.'); assert.equal(reviewFlags(fit6), 'Fit 6: review the placement.');
+    assert.ok(!listed.has(leader.id)); assert.equal(reviewFlags(leader), '');
+    assert.match(listed.get(review.id), /Status changed: Check this student/);
+  };
+  check();
+  // Nothing is lost: PP Students has the issue, and the snapshot has the leader's flag.
+  const issues = new Map(f.sheets.get('PP Students').data.slice(1).map(r => [r[0], r[12]]));
+  assert.equal(issues.get(clean.id), historical); assert.equal(issues.get(fit6.id), historical);
+  assert.deepEqual([...run.assignments.get(leader.id).flags], ['Leading ' + led.name + ', so placed there.']);
+  assert.equal(run.assignments.get(review.id).status, 'review');
+  // After someone else is moved by hand, Check again shows the same.
+  const other = placedRows(f, run).find(x => x.a.project2 && ![clean.id, fit6.id, leader.id].includes(x.row[0]));
+  moveToMajor(f, run, other); f.adapter.checkAgain();
+  check();
 });

@@ -2033,6 +2033,26 @@ var PPAdapter = (function () {
     var p = projects.filter(function (x) { return x.id === id; })[0];
     return p ? p.finalLength : null;
   }
+  // Flags and issues that only explain a placement. PP Needs you and the grade tabs' Review flags
+  // leave them out, while the run snapshot keeps every flag and PP Students every issue. Everything
+  // else needs a decision, and so does everything for a student in review. Some of these are reason
+  // sentences that are never flags today; they are listed so they never count as decisions.
+  var INFORMATION = [
+    /^Historical project not on current list; /, /^Latest timestamped submission retained; /,
+    /^Green status: the app considered this student after everyone else\.$/,
+    /^Checked (only one project|no projects), so placed after everyone else\.$/,
+    /^Only one current project was checked; /,
+    /^Leading .+, so placed there\.$/, /^Previous-project exception: named leader of /,
+    /^Locked in place/, /^In last year's project because of a (lock|move by hand)\.$/,
+    /^Moved to another group to balance the groups\.$/, /^Swapped with a student in another group to balance the groups\.$/,
+    /^Swapped into this group so classmates who asked to work together could/, /^(Moved|Switched weeks) to be with .+, who (they asked to work with|asked to work with them)\.$/
+  ];
+  function needsDecision(flag) { return !INFORMATION.some(function (re) { return re.test(text(flag)); }); }
+  // The flags PP Needs you and Review flags show: with the student, their issues too.
+  function decisionFlags(a, s) {
+    var all = (a.flags || []).concat(s ? s.issues || [] : []);
+    return a.status === 'review' ? all : all.filter(needsDecision);
+  }
   function masterName(grade) { return grade === 12 ? 'PP Senior' : grade === 11 ? 'PP Junior' : 'PP Sophomore'; }
   // Mr. Litowitz moves a student by picking another running project. Sheets always lets a cell be cleared.
   function projectDropdown(projects) {
@@ -2051,7 +2071,7 @@ var PPAdapter = (function () {
       if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
       var rows = students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, decisionFlags(a).join('; ')];
       });
       var tab = write(name, MASTER_HEADERS, rows);
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
@@ -2195,8 +2215,9 @@ var PPAdapter = (function () {
     writeNotPlaced(students, result);
     writeGroupTabs(students, result, info);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {
-      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, (a.flags || []).concat(s.issues || []).join('; ')];
+    // Only students with something to decide: a flag or issue that needs a decision, or a review status.
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || decisionFlags(a, s).length); }).map(function (a) {
+      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, decisionFlags(a, s).join('; ')];
     }));
     writeSeniorsToCheck(students, result);
   }
@@ -2377,7 +2398,7 @@ var PPAdapter = (function () {
       var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true, 'hand') : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
       a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
       if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
-      var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };
+      var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': decisionFlags(a).join('; ') };
       Object.keys(cells).forEach(function (h) { sheet(tab, true).getRange(r._row, header.indexOf(h) + 1).setValue(safeCell(cells[h])); });
       var from = track(original), to = track(a), what = !to ? 'Moved by hand out of every project, so this student is not placed.' : !from ? 'Placed by hand.' :
         from !== to && from !== 'mixed' && to !== 'mixed' ? (to === 'Major' ? 'Moved by hand from two Minors to one Major.' : 'Moved by hand from one Major to two Minors.') : 'Moved by hand.';
@@ -2455,7 +2476,7 @@ var PPAdapter = (function () {
     setup();
     return { message: 'Created 240 invented students. No real student records were used.' };
   }
-  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, readDetails: details, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
+  return { setup: setup, prepare: prepare, interest: interest, sort: sort, checkAgain: checkAgain, practice: practice, safeCell: safeCell, readSettings: settings, readChoices: choices, readDetails: details, needsDecision: needsDecision, masterHeaders: MASTER_HEADERS, savedMessage: savedMessage };
 }());
 
 function onOpen() {
