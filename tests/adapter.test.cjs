@@ -361,7 +361,7 @@ test('Check again reports a gender rule a hand move breaks when gender data exis
   const odd = 'practice1@example.org';
   const { f, run } = practiceRun('Gender practice', f => {
     const emails = ['Senior', 'Junior', 'Sophomore'].flatMap(tab => f.sheets.get(tab).data.slice(1).map(r => r[1]));
-    f.sheets.get('Gender').data.push(...emails.map(email => [email, email === odd ? 'Group B' : 'Group A']));
+    f.sheets.get('Gender').data.push(...emails.map(email => [email, email === odd ? 'Male' : 'Female']));
   });
   const pick = placedRows(f, run).find(x => x.row[0] === odd);
   const to = run.projects.find(p => p.finalLength === 'Major' && p.id !== pick.a.project1 && p.id !== pick.a.project2);

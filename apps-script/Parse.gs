@@ -96,6 +96,11 @@ var PPParser = (function () {
     return sameLastName(x, y) && sameFirstName(x, y);
   }
   function nameSpelling(value) { return nameParts(value).words.slice().sort().join(' '); }
+  // M, Male and Boy mean Male; F, Female and Girl mean Female, in any case. Anything else is unknown.
+  function genderOf(value) {
+    var v = normalize(value);
+    return v === 'm' || v === 'male' || v === 'boy' ? 'Male' : v === 'f' || v === 'female' || v === 'girl' ? 'Female' : null;
+  }
   function timestamp(value) {
     if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
     if (typeof value === 'number' && Number.isFinite(value)) return value > 100000000000 ? value : Math.round((value - 25569) * 86400000);
@@ -328,14 +333,17 @@ var PPParser = (function () {
         issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
       }
     });
-    var genders = {};
+    var genders = {}, unread = 0;
     (options.genders || []).forEach(function (g) {
       // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
-      var email = emailOf(g.email), gender = text(g.gender).toLowerCase().replace(/\s+/g, ' ');
-      if (!email || !gender) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email and a supplied gender.')); return; }
+      var email = emailOf(g.email), gender = genderOf(g.gender);
+      if (!email) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email or Student ID.')); return; }
+      // Never guess: anything but Male or Female leaves the student's gender unknown.
+      if (!gender) { unread++; return; }
       if (!genders[email]) genders[email] = [];
       genders[email].push(gender);
     });
+    if (unread) issues.push(issue('GENDER_UNKNOWN_VALUE', 'info', unread + ' Gender row' + (unread === 1 ? ' is' : 's are') + ' blank or say something other than Male or Female, so ' + (unread === 1 ? 'that student counts' : 'those students count') + ' as unknown.'));
     var statusChanges = options.statusChanges || [];
     statusChanges.forEach(function (change) {
       var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
@@ -390,6 +398,6 @@ var PPParser = (function () {
     });
     return {projects:projects,issues:issues};
   }
-  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious,sameName:sameName};
+  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious,sameName:sameName,genderOf:genderOf};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPParser;
