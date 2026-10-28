@@ -149,7 +149,7 @@ var PPEngine = (function () {
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
   function allocate(students,projects,cfg,choices,scores,issues){
     var groups=cohort(students,projects,cfg,issues),majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';}),base=6*Math.max(1,students.length*2)+1;
-    if(Math.pow(base,3)*6*students.length*2>Number.MAX_SAFE_INTEGER)throw new Error('Dataset is too large for the prototype integer priority costs.');
+    if(Math.pow(base,3)*6*students.length*2>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
     function solve(group,list,units){
       var quota=quotas(group.length,list,cfg,scores),assigned={},relaxed=false;
       for(var attempt=0;attempt<=cfg.maxSize;attempt++){

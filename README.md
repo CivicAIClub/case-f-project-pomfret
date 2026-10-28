@@ -56,9 +56,17 @@ Use an **empty scratch spreadsheet** with practice data first. This trial has no
 4. Save and reload the spreadsheet. Select **Project: Pomfret → Make practice data**. This refuses to run if any sheet contains data.
 5. Run **Prepare students**, **Count interest**, then **Sort** with a reason. Read `PP Interest`, `PP Summary`, `PP Check` and `PP Needs you` before using the grade masters or project rosters.
 
-**Check again** checks edited grade masters against the saved run and flags changed source inputs. It does not yet rebuild every derived table.
+In the grade tabs, a Major shows the same MAJ- label in Project #1 and Project #2, like last year's master list. A Minor shows two different MIN- labels, week 1 then week 2.
 
-Sources are `Senior`, `Junior`, `Sophomore` and `Projects`. Normal preparation and sorting read them without changing them. Controls are `Settings`, `Project choices`, `Status changes` and `Gender`. Generated review and roster tabs start with `PP `.
+To move a student by hand, pick another label from the dropdown in Project #1 or Project #2. A Major is the same MAJ- label twice, or one label and a blank. A Minor is two different MIN- labels. Then run **Check again**. For each student whose projects changed since Sort, it recomputes Status, Fit #1, Fit #2, Reason and Review flags, starts the reason with "Moved by hand." and writes those cells back. Students who weren't moved keep their cells. PP Check reports any rule a move breaks: group sizes, last year's project, gender balance when gender data exists, and a Major mixed with a Minor. Moving a student between one Major and two Minors is allowed and listed as information. Check again also flags changed source inputs. It does not rebuild PP Group tabs, PP Summary or PP Needs you. Sort rebuilds those, but Sort also rewrites the grade tabs, so it replaces any moves made by hand.
+
+Sources are `Senior`, `Junior`, `Sophomore` and `Projects`. Normal preparation and sorting read them without changing them. Controls are `Settings`, `Project choices`, `Status changes` and `Gender`. Generated review and roster tabs start with `PP `. Student comments appear only in `PP Students`, because the grade and group tabs get shared and comments can name other students.
+
+**Prepare students** handles a few cases from the real forms, and `PP Input check` lists each one:
+
+- Two students who sent forms from the same email both stay eligible. Each Student ID adds the name to the email, such as `jo@example.org:smith-jo`. Use that ID in `Gender` or `Status changes` for either student. The same student sending the form twice keeps only the newest response.
+- A hand-typed row (a name with no email or timestamp) merges into the matching form in its grade, and its trip, freshman-leader or green color wins. With no matching form, the student is marked late and placed after everyone else. If more than one form could match, the row goes to review.
+- An answer about last year's project that can't be matched never blocks a student. Projects it does name still count as repeats.
 
 ## Optional private workbook preview
 
