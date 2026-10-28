@@ -67,6 +67,23 @@ var PPAdapter = (function () {
     for (var c = 1; c <= headers.length; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
     return s;
   }
+  // A tab laid out for reading and printing, like last year's master list and rosters. Each line is
+  // { cells, style }: 'header' rows look like the other tabs' headers, and 'title' and 'total' rows
+  // are bold. Old formatting goes first, because rows move between runs.
+  function writeLayout(name, width, lines) {
+    var s = sheet(name) || ss().insertSheet(name);
+    var data = lines.map(function (l) { var row = []; for (var i = 0; i < width; i++) row.push(safeCell((l.cells || [])[i])); return row; });
+    resize(s, Math.max(1, data.length), width);
+    s.clearContents(); s.clearFormats(); s.setFrozenRows(0);
+    if (data.length) s.getRange(1, 1, data.length, width).setValues(data).setWrap(true);
+    lines.forEach(function (l, i) {
+      if (l.style === 'header') s.getRange(i + 1, 1, 1, width).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
+      else if (l.style) s.getRange(i + 1, 1, 1, width).setFontWeight('bold');
+    });
+    s.autoResizeColumns(1, width);
+    for (var c = 1; c <= width; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    return s;
+  }
   function seed(name, headers, rows) {
     if (!nonempty(sheet(name))) write(name, headers, rows);
   }
@@ -287,6 +304,34 @@ var PPAdapter = (function () {
     write('PP Project tabs', ['Project ID', 'Project', 'Sheet', 'Length'], newRegistry);
   }
   var GRADE_WORDS = { 12: 'Seniors', 11: 'Juniors', 10: 'Sophomores' };
+  // A name is "Last, First" or "First Last". Jr., Sr. and II to IV aren't last names.
+  function lastName(name) {
+    var raw = text(name), comma = raw.indexOf(',');
+    if (comma >= 0) return raw.slice(0, comma).trim();
+    var words = raw.split(/\s+/).filter(Boolean);
+    while (words.length > 1 && /^(jr|sr|ii|iii|iv)\.?$/i.test(words[words.length - 1])) words.pop();
+    return words.length ? words[words.length - 1] : '';
+  }
+  function byLastName(a, b) {
+    return lastName(a.name).toLowerCase().localeCompare(lastName(b.name).toLowerCase()) || text(a.name).toLowerCase().localeCompare(text(b.name).toLowerCase()) || String(a.id).localeCompare(String(b.id));
+  }
+  // Like last year's master list: every placed student's projects with their faculty, grade by grade.
+  // Students who aren't placed are in PP Not placed.
+  function writeMasterList(students, result, info) {
+    var byId = {}, lines = [];
+    function faculty(id) { return id && info[id] ? info[id].faculty : ''; }
+    result.assignments.forEach(function (a) { byId[a.studentId] = a; });
+    [12, 11, 10].forEach(function (grade, i) {
+      if (i) lines.push({ cells: [] });
+      lines.push({ cells: [GRADE_WORDS[grade].toUpperCase()], style: 'title' });
+      lines.push({ cells: ['Name', 'Project #1', 'Project Faculty', 'Project #2', 'Project Faculty', 'Why'], style: 'header' });
+      students.filter(function (s) { return s.grade === grade && byId[s.id] && byId[s.id].status === 'placed'; }).sort(byLastName).forEach(function (s) {
+        var a = byId[s.id], two = secondProject(a, result.projects);
+        lines.push({ cells: [s.name || s.id, projectToken(a.project1, result.projects), faculty(a.project1), projectToken(two, result.projects), faculty(two), a.reason] });
+      });
+    });
+    writeLayout('PP Master list', 6, lines);
+  }
   var SUMMARY_LABELS = [['total', 'Students'], ['eligible', 'Students who can be placed'], ['placed', 'Placed'], ['excluded', 'Excluded (trip or freshman leader)'], ['needsReview', 'Need review'], ['majorStudents', 'Major students'], ['minorStudents', 'Minor students'], ['projectCount', 'Projects running'], ['minorProjectCount', 'Minor projects running']];
   function summaryRows(summary) {
     var rows = SUMMARY_LABELS.filter(function (l) { return summary[l[0]] !== undefined; }).map(function (l) { return [l[1], summary[l[0]]]; });
@@ -321,8 +366,9 @@ var PPAdapter = (function () {
   }
   // Everything that follows from the placements. Check again rebuilds these from the grade tabs.
   function writeResults(students, result, status) {
-    var studentsById = {};
+    var studentsById = {}, info = details();
     students.forEach(function (s) { studentsById[s.id] = s; });
+    writeMasterList(students, result, info);
     writeGroupTabs(students, result);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || (a.flags || []).length || (s.issues || []).length); }).map(function (a) {

@@ -667,3 +667,47 @@ test('Setup adds Faculty and Location to an older Project choices tab and keeps 
   choices.forEach((r, i) => { if (i) r[8] = r[9] = ''; });
   assert.deepEqual(f.adapter.sort('Without faculty').assignments.map(a => [a.studentId, a.project1, a.project2]), withNames);
 });
+
+// The blocks of a tab laid out for printing: each title or heading row, its header row, and the rows
+// under it up to the next blank row.
+function blocks(sheet, isTitle) {
+  const out = [];
+  sheet.data.forEach((row, i) => {
+    if (isTitle(row[0])) out.push({ title: row[0], row: i + 1, header: sheet.data[i + 1], rows: [] });
+    else if (out.length && i > out[out.length - 1].row && row.some(v => v !== '') && !out[out.length - 1].closed) out[out.length - 1].rows.push(row);
+    else if (out.length && i > out[out.length - 1].row && row.every(v => v === '')) out[out.length - 1].closed = true;
+  });
+  return out;
+}
+const MASTER_LIST_HEADER = ['Name', 'Project #1', 'Project Faculty', 'Project #2', 'Project Faculty', 'Why'];
+test('PP Master list has seniors, juniors and sophomores by last name, with both projects, their faculty and the reason; Check again rebuilds it', () => {
+  const f = fixture(true); f.adapter.practice();
+  // Invented names in both formats, and a senior on a trip.
+  const senior = f.sheets.get('Senior').data;
+  senior[1][2] = 'Zimmer, Ava'; senior[2][2] = 'Ben Adams'; senior[3][2] = 'Cy Young Jr.';
+  f.sheets.get('Status changes').data.push([senior[4][1], '', 'trip', 'ExEd trip']);
+  f.sheets.get('Project choices').data.slice(1).forEach(r => { r[8] = 'Faculty of ' + r[1]; });
+  const result = f.adapter.sort('Master list'), run = saved(f), list = f.sheets.get('PP Master list');
+  const sections = blocks(list, v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v));
+  assert.deepEqual(sections.map(s => s.title), ['SENIORS', 'JUNIORS', 'SOPHOMORES']);
+  for (const s of sections) { assert.ok(list.isBold(s.row), s.title); assert.deepEqual(s.header, MASTER_LIST_HEADER); assert.ok(!list.isBold(s.row + 2)); }
+  // Last names: the practice names end in a number, which sorts before letters.
+  const names = sections[0].rows.map(r => r[0]);
+  assert.deepEqual(names.slice(-3), ['Ben Adams', 'Cy Young Jr.', 'Zimmer, Ava']);
+  assert.deepEqual(names.slice(0, -3), names.slice(0, -3).slice().sort());
+  assert.ok(!names.includes(senior[4][2]));
+  assert.equal(sections.reduce((n, s) => n + s.rows.length, 0), result.summary.placed);
+  const byName = new Map(sections.flatMap(s => s.rows).map(r => [r[0], r]));
+  for (const [id, a] of run.assignments) {
+    const s = run.students.get(id), row = byName.get(s.name);
+    if (a.status !== 'placed') { assert.equal(row, undefined); continue; }
+    const one = run.projects.find(p => p.id === a.project1), two = run.projects.find(p => p.id === (a.project2 || a.project1));
+    assert.deepEqual(row, [s.name, label(one), 'Faculty of ' + one.name, label(two), 'Faculty of ' + two.name, a.reason]);
+  }
+  // A hand move shows up after Check again.
+  const pick = placedRows(f, run).find(x => x.a.project2), target = moveToMajor(f, run, pick);
+  f.adapter.checkAgain();
+  const moved = blocks(f.sheets.get('PP Master list'), v => /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(v)).flatMap(s => s.rows).find(r => r[0] === pick.s.name);
+  assert.deepEqual(moved.slice(0, 5), [pick.s.name, label(target), 'Faculty of ' + target.name, label(target), 'Faculty of ' + target.name]);
+  assert.match(moved[5], /^Moved by hand\. /);
+});

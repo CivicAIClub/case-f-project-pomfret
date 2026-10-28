@@ -14,16 +14,19 @@ class Range {
   setDataValidation(rule) { this.cells((r, c) => this.sheet.validations.set(r + ',' + c, rule)); return this; }
   clearDataValidations() { this.cells((r, c) => this.sheet.validations.delete(r + ',' + c)); return this; }
   getDataValidations() { return Array.from({ length: this.rows }, (_, i) => Array.from({ length: this.cols }, (_, j) => this.sheet.validations.get((this.row + i) + ',' + (this.col + j)) || null)); }
-  setFontWeight() { return this; } setBackground() { return this; } setFontColor() { return this; } setWrap() { return this; }
+  // Bold is kept per cell, and like Sheets, clearContents leaves it; clearFormats removes it.
+  setFontWeight(weight) { this.cells((r, c) => { if (weight === 'bold') this.sheet.bold.add(r + ',' + c); else this.sheet.bold.delete(r + ',' + c); }); return this; }
+  setBackground() { return this; } setFontColor() { return this; } setWrap() { return this; }
 }
 class Sheet {
-  constructor(name, data = []) { Object.assign(this, { name, data, rows: 1000, cols: 26, validations: new Map() }); }
+  constructor(name, data = []) { Object.assign(this, { name, data, rows: 1000, cols: 26, validations: new Map(), bold: new Set() }); }
+  isBold(row, col = 1) { return this.bold.has(row + ',' + col); }
   getLastRow() { return this.data.length; }
   getDataRange() { return new Range(this, 1, 1, Math.max(1, this.data.length), Math.max(1, ...this.data.map(row => row.length))); }
   getRange(row, col, rows, cols) { return new Range(this, row, col, rows, cols); }
   getMaxRows() { return this.rows; } getMaxColumns() { return this.cols; }
   insertRowsAfter(_, n) { this.rows += n; } insertColumnsAfter(_, n) { this.cols += n; }
-  clearContents() { this.data = []; } setFrozenRows() {} autoResizeColumns() {} setColumnWidth() {} getColumnWidth() { return 120; }
+  clearContents() { this.data = []; } clearFormats() { this.bold.clear(); } setFrozenRows() {} autoResizeColumns() {} setColumnWidth() {} getColumnWidth() { return 120; }
   appendRow(row) { this.data.push(row); }
 }
 // The parts of SpreadsheetApp.newDataValidation() the adapter uses.
