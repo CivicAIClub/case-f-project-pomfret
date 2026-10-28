@@ -67,8 +67,9 @@ var PPAdapter = (function () {
       if (matches.length !== 1) throw new Error('Tab "' + name + '" needs exactly one "' + h + '" column.');
       return matches[0];
     });
-    return data.slice(1).filter(function (r) { return r.some(function (v) { return text(v) !== ''; }); }).map(function (r, i) {
-      var o = { _row: i + 2 }; headers.forEach(function (h, j) { o[h] = r[indices[j]]; }); return o;
+    // _row is the sheet row, so blank rows in between don't shift it.
+    return data.map(function (r, i) { return { values: r, row: i + 1 }; }).slice(1).filter(function (x) { return x.values.some(function (v) { return text(v) !== ''; }); }).map(function (x) {
+      var o = { _row: x.row }; headers.forEach(function (h, j) { o[h] = x.values[indices[j]]; }); return o;
     });
   }
   function boolean(v, label, blank) {
@@ -197,17 +198,28 @@ var PPAdapter = (function () {
     return p ? p.finalLength : null;
   }
   function masterName(grade) { return grade === 12 ? 'PP Senior' : grade === 11 ? 'PP Junior' : 'PP Sophomore'; }
+  // Mr. Litowitz moves a student by picking another running project. Sheets always lets a cell be cleared.
+  function projectDropdown(projects) {
+    var labels = projects.map(function (p) { return projectToken(p.id, projects); }).sort();
+    if (!labels.length) return null;
+    return SpreadsheetApp.newDataValidation().requireValueInList(labels, true).setAllowInvalid(false).setHelpText('Pick a running MAJ- or MIN- project, or clear the cell.').build();
+  }
   function output(input, result) {
-    var studentsById = {}, assignmentsById = {};
+    var studentsById = {}, assignmentsById = {}, dropdown = projectDropdown(result.projects);
     input.students.forEach(function (s) { studentsById[s.id] = s; });
     result.assignments.forEach(function (a) { assignmentsById[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade) {
-      write(masterName(grade), MASTER_HEADERS, input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
+      var name = masterName(grade), old = sheet(name);
+      // The last run's dropdowns may list projects that no longer run.
+      if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
+      var rows = input.students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
         // Like the master list, a Major shows its MAJ- label in both columns.
         var second = a.project2 || (lengthOf(a.project1, result.projects) === 'Major' ? a.project1 : null);
         return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(second, result.projects), a.status, a.fit1, a.fit2, a.reason, (a.flags || []).join('; ')];
-      }));
+      });
+      var tab = write(name, MASTER_HEADERS, rows);
+      if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
     var oldRegistry = values('PP Project tabs', false).slice(1).map(function (r) { return String(r[2] || ''); });
     var newRegistry = [];
@@ -286,14 +298,42 @@ var PPAdapter = (function () {
     state.assignments.forEach(function (a) { baseline[a.studentId] = a; });
     state.students.forEach(function (s) { known[s.id] = s; });
     state.projects.forEach(function (p) { tokenMap[projectToken(p.id, state.projects)] = p.id; });
+    function track(a) {
+      var one = lengthOf(a.project1, state.projects), two = lengthOf(a.project2, state.projects);
+      if (one === 'Major' && !a.project2) return 'Major';
+      if (one === 'Minor' && two === 'Minor' && a.project1 !== a.project2) return 'Minor';
+      return a.project1 || a.project2 ? 'mixed' : null;
+    }
+    // A student whose projects changed since Sort was moved by hand. Recompute the row the way
+    // Sort would, write it back, and let the checks below report any rule the move breaks.
+    function moveByHand(tab, header, r, a, student, original) {
+      var ids = [a.project1, a.project2].filter(Boolean);
+      var placement = ids.length ? PPEngine.explain(student, ids, state.projects, state.settings, state.choices, true) : { fit1: null, fit2: null, reason: 'Not placed in a project.', flags: [] };
+      a.fit1 = placement.fit1; a.fit2 = placement.fit2; a.reason = 'Moved by hand. ' + placement.reason; a.flags = placement.flags; a.movedByHand = true;
+      if (ids.length) a.status = 'placed'; else if (a.status === 'placed') a.status = 'review';
+      var cells = { 'Status': a.status, 'Fit #1': a.fit1, 'Fit #2': a.fit2, 'Reason': a.reason, 'Review flags': a.flags.join('; ') };
+      Object.keys(cells).forEach(function (h) { sheet(tab, true).getRange(r._row, header.indexOf(h) + 1).setValue(safeCell(cells[h])); });
+      var from = track(original), to = track(a), what = !to ? 'Moved by hand out of every project, so this student is not placed.' : !from ? 'Placed by hand.' :
+        from !== to && from !== 'mixed' && to !== 'mixed' ? (to === 'Major' ? 'Moved by hand from two Minors to one Major.' : 'Moved by hand from one Major to two Minors.') : 'Moved by hand.';
+      checks.push({ severity: 'info', code: 'moved_by_hand', studentId: a.studentId, message: what + ' Fit #1, Fit #2 and Reason were updated.' });
+    }
     [12, 11, 10].forEach(function (grade) {
-      records(masterName(grade), MASTER_HEADERS, true).forEach(function (r) {
-        var id = text(r['Student ID']), original = baseline[id], one = text(r['Project #1']), two = text(r['Project #2']);
+      var tab = masterName(grade), header = values(tab, true)[0].map(text);
+      records(tab, MASTER_HEADERS, true).forEach(function (r) {
+        var id = text(r['Student ID']), original = baseline[id], student = known[id], one = text(r['Project #1']), two = text(r['Project #2']);
         var a = { studentId: id, project1: one ? tokenMap[one] || one : null, project2: two ? tokenMap[two] || two : null, status: text(r.Status), reason: text(r.Reason), flags: [], fit1: null, fit2: null };
-        // A Major's Project #2 repeats its MAJ- label or is blank. Either way it is one project.
+        // A Major is one MAJ- label: in both columns, or in one column with the other blank.
         if (a.project2 === a.project1 && lengthOf(a.project1, state.projects) === 'Major') a.project2 = null;
-        if (known[id] && known[id].grade !== grade) checks.push({ severity: 'error', code: 'wrong_grade_tab', studentId: id, message: 'Student appears in the wrong grade master.' });
-        if (one && !tokenMap[one] || two && !tokenMap[two]) checks.push({ severity: 'error', code: 'unknown_project_token', studentId: id, message: 'Project #1 or #2 does not exactly match a running MAJ-/MIN- project label.' });
+        else if (!a.project1 && lengthOf(a.project2, state.projects) === 'Major') { a.project1 = a.project2; a.project2 = null; }
+        if (student && student.grade !== grade) checks.push({ severity: 'error', code: 'wrong_grade_tab', studentId: id, message: 'Student appears in the wrong grade master.' });
+        var unknown = one && !tokenMap[one] || two && !tokenMap[two];
+        if (unknown) checks.push({ severity: 'error', code: 'unknown_project_token', studentId: id, message: 'Project #1 or #2 does not exactly match a running MAJ-/MIN- project label.' });
+        if (original && student && !unknown && (a.project1 !== original.project1 || a.project2 !== original.project2)) {
+          moveByHand(tab, header, r, a, student, original);
+          if (text(r.Name) !== text(student.name)) checks.push({ severity: 'warning', code: 'manual_edit', studentId: id, message: 'This row differs from the saved program run (Name). The current cells are being checked.' });
+          current.push(a);
+          return;
+        }
         ['project1', 'project2'].forEach(function (key, i) {
           var label = 'Fit #' + (i + 1), raw = r[label], fit = text(raw) === '' ? null : Number(raw);
           if ((typeof raw === 'boolean') || (fit !== null && (!Number.isInteger(fit) || fit < 1 || fit > 6)) || (a[key] && fit === null) || (!a[key] && fit !== null)) {
@@ -358,7 +398,7 @@ function PP_menu(action, message) {
 function PP_setup() { PP_menu(PPAdapter.setup, 'Setup is ready. Existing settings were preserved.'); }
 function PP_prepare() { PP_menu(PPAdapter.prepare, 'Read PP Students and PP Input check before counting interest.'); }
 function PP_interest() { PP_menu(PPAdapter.interest, 'Read PP Interest and PP Project check. Final choices belong in Project choices.'); }
-function PP_check() { PP_menu(PPAdapter.checkAgain, 'PP Check now evaluates the current grade master cells against the saved run.'); }
+function PP_check() { PP_menu(PPAdapter.checkAgain, 'PP Check now checks the grade tabs against the saved run. Students moved by hand have a new Fit, Reason and flags.'); }
 function PP_practice() { PP_menu(PPAdapter.practice, 'Practice data is ready. Run Prepare students, Count interest, then Sort.'); }
 function PP_sort() {
   var ui = SpreadsheetApp.getUi(), response = ui.prompt('Why are you running the sort?', 'Describe the rule or client decision for PP Run log.', ui.ButtonSet.OK_CANCEL);

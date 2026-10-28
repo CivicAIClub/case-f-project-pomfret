@@ -132,6 +132,14 @@ var PPEngine = (function () {
       }
     });return oriented;
   }
+  // Fit, reason and flags for one student's projects. The sort uses it, and so does Check again
+  // when Mr. Litowitz moves a student by hand (byHand drops the note about the Minor student target).
+  function explain(s,ids,projects,input,choices,byHand){
+    var cfg=settings(input),byId={},flags=[];arr(projects).forEach(function(p){byId[p.id]=p;});
+    var fits=arr(ids).map(function(id){return fit(s,byId[id],cfg);});
+    if(s.status==='late')flags.push('Green status: the app considered this student after everyone else.');if(!byHand&&s.preference==='Major'&&fits.length===2)flags.push('This student asked for a Major but received Minors to meet the Minor student target.');if(s.previousKnown===false)flags.push('Past project information is missing.');arr(ids).forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(fits.some(function(f){return f.tier===6;}))flags.push('Fit 6: review the placement.');
+    return {fit1:fits[0]?fits[0].tier:null,fit2:fits[1]?fits[1].tier:null,reason:fits.length>1?'Week 1: '+fits[0].reason+' Week 2: '+fits[1].reason:fits.length?fits[0].reason:'',flags:flags};
+  }
   function emptyAssignment(s){return {studentId:s.id,project1:null,project2:null,fit1:null,fit2:null,reason:s.status==='trip'?'Excluded: ExEd trip.':s.status==='leader'?'Excluded: freshman leader.':eligible(s)?'Needs review: the app could not place this student with the selected projects and group sizes.':'Needs review: check the student identity or status in the source records.',flags:[],status:s.status==='trip'||s.status==='leader'?'excluded':'review'};}
   function allocate(students,projects,cfg,choices,scores,issues){
     var groups=cohort(students,projects,cfg,issues),majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';}),base=6*Math.max(1,students.length*2)+1;
@@ -147,11 +155,10 @@ var PPEngine = (function () {
       if(relaxed)issues.push(note('QUOTA_RELAXED','info',(units===2?'Minor':'Major')+' groups could not all meet the balanced size targets because of project restrictions. They still stay within the maximum.'));
       return assigned;
     }
-    var mp=solve(groups.major,majorProjects,1),np=solve(groups.minor,minorProjects,2),oriented=orient(np,minorProjects),byId={};projects.forEach(function(p){byId[p.id]=p;});
+    var mp=solve(groups.major,majorProjects,1),np=solve(groups.minor,minorProjects,2),oriented=orient(np,minorProjects);
     var minorIds={};groups.minor.forEach(function(s){minorIds[s.id]=true;});
     return students.map(function(s){var a=emptyAssignment(s);if(!eligible(s))return a;var pair=minorIds[s.id]?oriented[s.id]:mp[s.id];if(!pair||pair.length!==(minorIds[s.id]?2:1))return a;
-      a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;var f1=fit(s,byId[pair[0]],cfg),f2=pair[1]?fit(s,byId[pair[1]],cfg):null;a.fit1=f1.tier;a.fit2=f2?f2.tier:null;a.reason=(f2?'Week 1: ':'')+f1.reason+(f2?' Week 2: '+f2.reason:'');
-      if(s.status==='late')a.flags.push('Green status: the app considered this student after everyone else.');if(s.preference==='Major'&&pair.length===2)a.flags.push('This student asked for a Major but received Minors to meet the Minor student target.');if(s.previousKnown===false)a.flags.push('Past project information is missing.');pair.forEach(function(id){if(isLeader(s,byId[id],choices)&&arr(s.previous).indexOf(id)>=0)a.flags.push('Previous-project exception: named leader of '+byId[id].name+'.');});if(f1.tier===6||(f2&&f2.tier===6))a.flags.push('Fit 6: review the placement.');return a;
+      var placement=explain(s,pair,projects,cfg,choices,false);a.status='placed';a.project1=pair[0];a.project2=pair[1]||null;a.fit1=placement.fit1;a.fit2=placement.fit2;a.reason=placement.reason;a.flags=placement.flags;return a;
     });
   }
   function counts(projects,assignments){var out={};projects.forEach(function(p){out[p.id]=[0,0];});assignments.forEach(function(a){if(a.status!=='placed')return;if(out[a.project1])out[a.project1][0]++;if(out[a.project2])out[a.project2][1]++;});return out;}
@@ -188,10 +195,13 @@ var PPEngine = (function () {
       if(a.status!=='placed'){if(a.project1||a.project2)out.push(note('HIDDEN_PLACEMENT','error','An excluded or review row still contains a project.',{studentId:s.id}));if(eligible(s)&&a.status==='excluded')out.push(note('WRONG_EXCLUSION','error','Eligible student is marked excluded.',{studentId:s.id}));if((s.status==='trip'||s.status==='leader')&&a.status!=='excluded')out.push(note('EXCLUSION_STATUS','error','Trip or freshman leader is not marked excluded.',{studentId:s.id}));if(a.status==='review')out.push(note('NEEDS_REVIEW','warning','Check the source record or find a complete placement for this student.',{studentId:s.id}));return;}
       if(!eligible(s))out.push(note('INELIGIBLE_PLACED','error','Trip, freshman leader, or unresolved student was placed.',{studentId:s.id}));
       var p1=projectMap[a.project1],p2=projectMap[a.project2];if(!p1)out.push(note('UNKNOWN_PROJECT','error','Project #1 is missing or unknown.',{studentId:s.id}));if(a.project2&&!p2)out.push(note('UNKNOWN_PROJECT','error','Project #2 is unknown.',{studentId:s.id}));
-      if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));
+      if(p1&&p2&&p1.finalLength!==p2.finalLength)out.push(note('MIXED_TRACKS','error','Project #1 and Project #2 mix a Major and a Minor. Use one Major (the same label twice, or one label and a blank) or two different Minors.',{studentId:s.id}));
+      else{if(p1&&p1.finalLength==='Major'&&a.project2)out.push(note('MAJOR_SECOND_PROJECT','error','A Major student has a second project.',{studentId:s.id}));if(p1&&p1.finalLength==='Minor'&&(!p2||p2.finalLength!=='Minor'||p1.id===p2.id))out.push(note('INVALID_MINOR_PAIR','error','A Minor student needs two different Minor projects, one each week.',{studentId:s.id}));}
       if(p1)members[p1.id][0].push(s);if(p2)members[p2.id][1].push(s);
       [p1,p2].forEach(function(p,i){if(!p)return;if(!allowed(s,p,choices))out.push(note('PREVIOUS_PROJECT','error','Student repeats a previous project without a leader exception.',{studentId:s.id,projectId:p.id}));var actual=fit(s,p,cfg).tier;if(a[i===0?'fit1':'fit2']!==actual)out.push(note('STALE_FIT','error','Displayed fit does not match the source preferences.',{studentId:s.id,projectId:p.id}));if(actual===6)out.push(note('LOW_FIT','warning','Fit 6 placement needs review.',{studentId:s.id,projectId:p.id}));});
-      if(s.preference==='Minor'&&p1&&p1.finalLength==='Major')out.push(note('MINOR_PREFERENCE_CHANGED','warning','This student asked for Minors and received a Major.',{studentId:s.id}));if(s.preference==='Major'&&p1&&p1.finalLength==='Minor')out.push(note('MAJOR_TO_MINOR',cfg.allowMajorToMinor?'warning':'error','This student asked for a Major and received Minors.',{studentId:s.id}));
+      // A track change Mr. Litowitz made by hand is his decision, so it is information only.
+      var byHand=a.movedByHand===true?' Moved by hand.':'';
+      if(s.preference==='Minor'&&p1&&p1.finalLength==='Major')out.push(note('MINOR_PREFERENCE_CHANGED',byHand?'info':'warning','This student asked for Minors and received a Major.'+byHand,{studentId:s.id}));if(s.preference==='Major'&&p1&&p1.finalLength==='Minor')out.push(note('MAJOR_TO_MINOR',byHand?'info':cfg.allowMajorToMinor?'warning':'error','This student asked for a Major and received Minors.'+byHand,{studentId:s.id}));
     });
     students.forEach(function(s){if(!seen[s.id])out.push(note('MISSING_STUDENT','error','Student has no assignment or review row.',{studentId:s.id}));else if(seen[s.id]!==1)out.push(note('DUPLICATE_ASSIGNMENT','error','Student has more than one assignment row.',{studentId:s.id}));if(s.previousKnown===false&&eligible(s))out.push(note('PREVIOUS_UNAVAILABLE','warning','Past projects are missing for this student, so the app could not fully check for repeats.',{studentId:s.id}));});
     projects.forEach(function(p){var c=choiceFor(choices,p.id);if(c.run===false)out.push(note('PROJECT_DISABLED','error','Project is selected despite Run = FALSE.',{projectId:p.id}));if(c.length&&p.finalLength!==c.length)out.push(note('LENGTH_CHOICE_IGNORED','error','Selected length differs from the project choice.',{projectId:p.id}));projects.forEach(function(q){if(compare(p.id,q.id)<0&&conflicts(p.id,q.id,choices))out.push(note('PROJECT_CONFLICT','error','Projects cannot run together: '+p.name+' and '+q.name,{projectId:p.id}));});
@@ -206,6 +216,6 @@ var PPEngine = (function () {
     return out;
   }
   function fingerprint(value){function stable(v){if(v===null||typeof v!=='object')return JSON.stringify(v);if(Array.isArray(v))return '['+v.map(stable).join(',')+']';return '{'+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';}var str=stable(value),h=2166136261;for(var i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return ('00000000'+(h>>>0).toString(16)).slice(-8);}
-  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,sort:sort,check:check,fingerprint:fingerprint};
+  return {defaults:defaults,settings:settings,interest:interest,propose:propose,fit:fit,explain:explain,sort:sort,check:check,fingerprint:fingerprint};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPEngine;
