@@ -37,7 +37,8 @@ function fixture(useRealCore = false) {
   let released = 0;
   const context = vm.createContext({ module: { exports: {} }, PPParser: useRealCore ? require('../core/parser.js') : parser, PPEngine: useRealCore ? require('../core/engine.js') : engine, PPCatalog: useRealCore ? require('../core/catalog.js') : catalog,
     SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, newDataValidation },
-    LockService: { getDocumentLock: () => ({ tryLock: () => true, releaseLock: () => released++ }) }, Date, console });
+    LockService: { getDocumentLock: () => ({ tryLock: () => true, releaseLock: () => released++ }) },
+    Session: { getActiveUser: () => ({ getEmail: () => 'teacher@example.org' }) }, Date, console });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/Main.gs'), 'utf8'), context);
   const adapter = context.module.exports;
   function source() {
@@ -231,7 +232,9 @@ test('a Major shows the same MAJ- label in both columns, and Check again accepts
     if (a.project2) { minors++; assert.match(row[2], /^MIN-/); assert.match(row[3], /^MIN-/); assert.notEqual(row[2], row[3]); }
     else { majors++; assert.match(row[2], /^MAJ-/); assert.equal(row[3], row[2]); assert.equal(row[6], ''); }
   }
-  assert.equal(majors, 152); assert.equal(minors, 88);
+  // Every Not-sure practice student checked four Minors and four Majors, so they lean Minor and fill
+  // the Minors to the maximum.
+  assert.equal(majors, 144); assert.equal(minors, 96);
   let checks = f.adapter.checkAgain();
   assert.equal(checks.filter(c => c.severity === 'error').length, 0);
   assert.ok(!checks.some(c => c.code === 'manual_edit'));
@@ -360,11 +363,285 @@ test('Check again reports a gender rule a hand move breaks when gender data exis
   const odd = 'practice1@example.org';
   const { f, run } = practiceRun('Gender practice', f => {
     const emails = ['Senior', 'Junior', 'Sophomore'].flatMap(tab => f.sheets.get(tab).data.slice(1).map(r => r[1]));
-    f.sheets.get('Gender').data.push(...emails.map(email => [email, email === odd ? 'Group B' : 'Group A']));
+    f.sheets.get('Gender').data.push(...emails.map(email => [email, email === odd ? 'Male' : 'Female']));
   });
   const pick = placedRows(f, run).find(x => x.row[0] === odd);
   const to = run.projects.find(p => p.finalLength === 'Major' && p.id !== pick.a.project1 && p.id !== pick.a.project2);
   assert.ok(!f.adapter.checkAgain().some(c => c.code === 'GENDER_BALANCE' && c.projectId === to.id));
   pick.row[2] = pick.row[3] = label(to);
   assert.ok(f.adapter.checkAgain().some(c => c.code === 'GENDER_BALANCE' && c.severity === 'warning' && c.projectId === to.id));
+});
+
+test('Setup adds the tieSeed setting and the Tie seed log column to an older sheet and keeps its values', () => {
+  const f = fixture(true); f.adapter.practice();
+  const settings = f.sheets.get('Settings').data, log = f.sheets.get('PP Run log').data;
+  // Make the sheet look like one made before this round.
+  settings.splice(settings.findIndex(r => r[0] === 'tieSeed'), 1);
+  settings.find(r => r[0] === 'minSize')[1] = 9;
+  log[0] = log[0].slice(0, 7);
+  assert.equal(f.adapter.readSettings().tieSeed, 2026);
+  f.adapter.setup();
+  assert.equal(settings.find(r => r[0] === 'minSize')[1], 9);
+  assert.deepEqual(settings.find(r => r[0] === 'tieSeed').slice(0, 2), ['tieSeed', 2026]);
+  assert.ok(settings.find(r => r[0] === 'tieSeed')[2].length > 0);
+  f.adapter.sort('Tie seed log check');
+  assert.equal(log[0][7], 'Tie seed');
+  assert.equal(f.sheets.get('PP Run log').data[1][7], 2026);
+});
+
+test('PP Summary shows each grade\'s placements, and PP Seniors to check lists seniors in a project they did not check', () => {
+  // One invented senior checked only a cancelled project, so they can't get a project they checked.
+  const { f, run } = practiceRun('Results summary practice', f => { f.sheets.get('Senior').data[1][7] = 'Derelict Sculpture'; });
+  const rows = new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  const parts = [' in a Major they checked', " in a Major they didn't check", ' in Minors, both weeks checked', ' in Minors, one week checked', ' in Minors, neither week checked'];
+  for (const [who, grade] of [['Seniors', 12], ['Juniors', 11], ['Sophomores', 10]]) {
+    assert.equal(parts.reduce((n, part) => n + rows.get(who + part), 0), rows.get(who + ' placed'), who);
+    const placements = [...run.assignments.values()].filter(a => a.status === 'placed' && run.students.get(a.studentId).grade === grade).reduce((n, a) => n + (a.project2 ? 2 : 1), 0);
+    assert.equal([1, 2, 3, 4, 5, 6].reduce((n, t) => n + rows.get(who + ' placements at fit ' + t), 0), placements, who);
+  }
+  assert.equal(rows.get('Seniors placed') + rows.get('Juniors placed') + rows.get('Sophomores placed'), rows.get('Placed'));
+  const expected = [...run.assignments.values()].filter(a => {
+    const s = run.students.get(a.studentId);
+    return s.grade === 12 && a.status === 'placed' && [a.project1, a.project2].filter(Boolean).some(id => !s.choices.includes(id));
+  }).map(a => run.students.get(a.studentId).email).sort();
+  const listed = f.sheets.get('PP Seniors to check').data;
+  assert.deepEqual(listed[0], ['Name', 'Email', 'Project #1', 'Project #2', 'Reason']);
+  assert.ok(expected.includes('practice1@example.org'));
+  assert.deepEqual(listed.slice(1).map(r => r[1]).sort(), expected);
+});
+
+
+const lockRows = f => f.sheets.get('Locked placements').data;
+// Move a placed student to another running Major, the way Mr. Litowitz does in the grade tab.
+function moveToMajor(f, run, pick) {
+  const target = run.projects.find(p => p.finalLength === 'Major' && p.id !== pick.a.project1 && p.id !== pick.a.project2);
+  pick.row[2] = pick.row[3] = label(target);
+  return target;
+}
+test('Check again saves each move to Locked placements, and Sort keeps it there', () => {
+  const { f, run } = practiceRun('Locks practice'), pick = placedRows(f, run).find(x => x.tab === 'PP Junior');
+  const target = moveToMajor(f, run, pick), checks = f.adapter.checkAgain();
+  assert.equal(checks.savedMoves, 1);
+  assert.equal(f.adapter.savedMessage(1), "Saved 1 move. They'll stay put when you sort again.");
+  const rows = lockRows(f);
+  assert.deepEqual(rows[0], ['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why']);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1].slice(0, 5), [pick.row[0], pick.s.name, label(target), label(target), 'teacher@example.org']);
+  assert.ok(rows[1][5] instanceof Date); assert.equal(rows[1][6], 'Moved by hand');
+  // Check again again finds nothing new to save.
+  assert.equal(f.adapter.checkAgain().savedMoves, 0);
+  const result = f.adapter.sort('Rerun after a move'), a = result.assignments.find(x => x.studentId === pick.row[0]);
+  assert.equal(result.savedMoves, 0);
+  assert.equal(a.project1, target.id); assert.match(a.reason, /^Locked in place: Moved by hand\. /);
+  const log = f.sheets.get('PP Run log').data;
+  assert.equal(log[log.length - 1][log[0].indexOf('Run by')], 'teacher@example.org');
+});
+test('Sort saves moves first, so a move is kept even without Check again', () => {
+  const { f, run } = practiceRun('Locks practice'), pick = placedRows(f, run).find(x => x.a.project2);
+  const target = moveToMajor(f, run, pick), result = f.adapter.sort('Rerun without Check again');
+  assert.equal(result.savedMoves, 1);
+  assert.equal(result.assignments.find(x => x.studentId === pick.row[0]).project1, target.id);
+  assert.equal(lockRows(f).length, 2);
+});
+test('a locked student stays put when a better project appears, and moves once the lock is deleted', () => {
+  let { f, run } = practiceRun('Before the lock'), pick = placedRows(f, run).find(x => x.tab === 'PP Senior' && !x.a.project2);
+  const id = pick.row[0], locked = moveToMajor(f, run, pick);
+  f.adapter.sort('Lock by hand');
+  // The student now checks two other projects and matches the first one's Type and goal, so it fits far better.
+  const better = run.projects.filter(p => p.finalLength === 'Major' && p.id !== locked.id && p.id !== pick.a.project1);
+  const source = f.sheets.get('Senior').data.find(r => r[1] === id);
+  source[7] = better[0].name + '; ' + better[1].name; source[5] = better[0].types[0]; source[4] = better[0].goals[0];
+  let result = f.adapter.sort('Answers changed');
+  assert.equal(result.assignments.find(x => x.studentId === id).project1, locked.id);
+  const rows = lockRows(f); rows.splice(rows.findIndex(r => r[0] === id), 1);
+  result = f.adapter.sort('Lock deleted');
+  assert.notEqual(result.assignments.find(x => x.studentId === id).project1, locked.id);
+  assert.ok(realEngine.fit(saved(f).students.get(id), run.projects.find(p => p.id === result.assignments.find(x => x.studentId === id).project1), run.settings).tier < 5);
+});
+test('a rerun with nothing changed gives identical groups', () => {
+  const { f } = practiceRun('First run'), tabs = () => [...f.sheets.keys()].filter(n => /^PP (Senior|Junior|Sophomore|Group \d{2} .+)$/.test(n)).sort().map(n => JSON.stringify([n, f.sheets.get(n).data]));
+  const before = tabs(), result = f.adapter.sort('Same inputs again');
+  assert.deepEqual(tabs(), before);
+  assert.equal(result.savedMoves, 0);
+});
+test('Check again rebuilds the group tabs, PP Summary and PP Needs you from the grade tabs without sorting', () => {
+  const { f, run } = practiceRun('Rebuild practice'), pick = placedRows(f, run).find(x => x.a.project2);
+  const target = moveToMajor(f, run, pick), registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const summary = () => new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  const majors = summary().get('Major students'), snapshot = JSON.stringify(f.sheets.get('PP Run snapshot').data);
+  f.adapter.checkAgain();
+  assert.ok(f.sheets.get(registry.get(target.id)).data.some(r => r[3] === pick.row[0] && r[0] === 'Both weeks'));
+  assert.ok(!f.sheets.get(registry.get(pick.a.project1)).data.some(r => r[3] === pick.row[0]));
+  assert.equal(summary().get('Major students'), majors + 1);
+  assert.equal(summary().get('Review status'), 'Rebuilt by Check again from the grade tabs. Read PP Check before use.');
+  assert.ok(f.sheets.get('PP Needs you').data.length > 1);
+  assert.equal(JSON.stringify(f.sheets.get('PP Run snapshot').data), snapshot);
+});
+test('saving moves still works after Settings, Project choices or the forms change', () => {
+  const { f, run } = practiceRun('Before the changes'), pick = placedRows(f, run).find(x => x.tab === 'PP Sophomore');
+  f.sheets.get('Settings').data.find(r => r[0] === 'minSize')[1] = 7;
+  f.sheets.get('Project choices').data[1][2] = false;
+  f.sheets.get('Junior').data[1][2] = 'Changed practice name';
+  moveToMajor(f, run, pick);
+  const checks = f.adapter.checkAgain();
+  assert.equal(checks.savedMoves, 1);
+  assert.ok(checks.some(c => c.code === 'stale_inputs'));
+  // A damaged snapshot still stops Check again, but the move is saved first.
+  const g = practiceRun('Damaged snapshot'), other = placedRows(g.f, g.run)[0];
+  moveToMajor(g.f, g.run, other);
+  const row = g.f.sheets.get('PP Run snapshot').data.find(r => r[0] === 'student'), changed = JSON.parse(row[2]);
+  changed.grade = 10; row[2] = JSON.stringify(changed);
+  assert.throws(() => g.f.adapter.checkAgain(), /^Error: Saved 1 move\. .*snapshot inputs changed/);
+  assert.equal(lockRows(g.f).length, 2);
+});
+test('there is nothing to save before the first Sort', () => {
+  const f = fixture(true); f.adapter.practice();
+  assert.equal(f.adapter.sort('First run').savedMoves, 0);
+  assert.equal(lockRows(f).length, 1);
+});
+test('Setup keeps hand-typed rows in Locked placements; Sort uses them and reports names it cannot match', () => {
+  const f = fixture(true); f.adapter.practice();
+  const typed = [['Email', 'Name', 'Project 1', 'Project 2', 'Locked by', 'When', 'Why'],
+    ['', 'Practice Student 001', 'Model UN', '', 'Mr. Litowitz', '', 'Asked to stay with his advisor'],
+    ['PRACTICE2@example.org', '', 'model-un', 'model-un', 'Mr. Litowitz', '', ''],
+    ['practice3@example.org', 'Practice Student 003', 'Underwater Basket Weaving', '', '', '', '']];
+  f.sheets.set('Locked placements', new Sheet('Locked placements', typed.map(r => r.slice())));
+  f.adapter.setup();
+  assert.deepEqual(lockRows(f), typed);
+  const result = f.adapter.sort('Hand-typed locks');
+  const at = id => result.assignments.find(a => a.studentId === id);
+  assert.ok(result.projects.some(p => p.id === 'model-un'));
+  assert.equal(at('practice1@example.org').project1, 'model-un');
+  assert.equal(at('practice2@example.org').project1, 'model-un');
+  assert.ok(f.sheets.get('PP Check').data.some(r => r[0] === 'error' && r[1] === 'LOCK_UNKNOWN_PROJECT' && /Underwater Basket Weaving/.test(r[2])));
+  // The reason gives the row's Why, and only Locked placements says who locked a student.
+  assert.match(at('practice1@example.org').reason, /^Locked in place: Asked to stay with his advisor\. /);
+  assert.match(at('practice2@example.org').reason, /^Locked in place by hand\. /);
+  for (const [name, tab] of f.sheets) if (name !== 'Locked placements') assert.ok(!JSON.stringify(tab.data).includes('Litowitz'), name);
+  assert.deepEqual(lockRows(f), typed);
+});
+test('a student moved into a fit 6 project gets no fit-6 flag or LOW_FIT warning, in Check again and after Sort', () => {
+  const { f, run } = practiceRun('Fit 6 lock'), majors = run.projects.filter(p => p.finalLength === 'Major');
+  const fit6 = x => majors.find(p => p.id !== x.a.project1 && realEngine.fit(x.s, p).tier === 6);
+  const pick = placedRows(f, run).find(x => !x.a.project2 && fit6(x)), id = pick.row[0];
+  pick.row[2] = pick.row[3] = label(fit6(pick));
+  const lowFit = () => f.sheets.get('PP Check').data.some(r => r[1] === 'LOW_FIT' && r[3] === id);
+  const flags = () => f.sheets.get(pick.tab).data.find(r => r[0] === id)[8];
+  assert.equal(f.adapter.checkAgain().savedMoves, 1);
+  assert.equal(lowFit(), false); assert.doesNotMatch(flags(), /Fit 6/);
+  f.adapter.sort('Rerun with the lock');
+  assert.equal(lowFit(), false); assert.doesNotMatch(flags(), /Fit 6/);
+  // Check again after Sort still treats the student as locked.
+  assert.equal(f.adapter.checkAgain().savedMoves, 0);
+  assert.equal(lowFit(), false);
+});
+
+const FRIEND_HEADERS = ['Name', 'Grade', 'Request', 'Classmate', 'Classmate grade', 'Named each other', 'Match', 'Note', 'Use', 'Comment', 'Email', 'Classmate email'];
+test('Setup creates Friend requests and the useFriendRequests setting, keeping what is already there', () => {
+  const f = fixture(true); f.adapter.practice();
+  assert.deepEqual(f.sheets.get('Friend requests').data, [FRIEND_HEADERS]);
+  assert.deepEqual(f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests').slice(0, 2), ['useFriendRequests', false]);
+  // A reviewed tab already in the sheet keeps its columns and rows.
+  const reviewed = [FRIEND_HEADERS, ['Practice Student 001', 12, 'With', 'Practice Student 002', 12, true, 'Yes', '', true, 'Invented comment', 'practice1@example.org', 'practice2@example.org']];
+  f.sheets.set('Friend requests', new Sheet('Friend requests', reviewed.map(r => r.slice())));
+  const settings = f.sheets.get('Settings').data; settings.splice(settings.findIndex(r => r[0] === 'useFriendRequests'), 1);
+  assert.equal(f.adapter.readSettings().useFriendRequests, false);
+  f.adapter.setup();
+  assert.deepEqual(f.sheets.get('Friend requests').data, reviewed);
+});
+test('friend requests are read by header name, use only rows marked Use, and fill PP Friend check and PP Summary', () => {
+  const f = fixture(true); f.adapter.practice();
+  // Columns in a different order; the Comment column holds text that must never matter.
+  const order = ['Email', 'Classmate email', 'Use', 'Request', 'Name', 'Classmate', 'Comment', 'Named each other', 'Grade', 'Classmate grade', 'Match', 'Note'];
+  const row = values => order.map(h => values[h] === undefined ? '' : values[h]);
+  f.sheets.set('Friend requests', new Sheet('Friend requests', [order,
+    row({ Email: 'practice1@example.org', 'Classmate email': ' PRACTICE2@example.org', Use: true, Request: 'With', Name: 'Practice Student 001', Classmate: 'Practice Student 002', Comment: '=IMPORTXML("ignored")' }),
+    row({ Email: 'practice3@example.org', 'Classmate email': 'practice4@example.org', Use: false, Request: 'Not with', Name: 'Practice Student 003', Classmate: 'Practice Student 004' }),
+    row({ Email: '', 'Classmate email': 'practice6@example.org', Use: true, Request: 'With', Name: 'Practice Student 005', Classmate: 'Practice Student 006' })]));
+  f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+  f.adapter.sort('Friend requests practice');
+  const check = f.sheets.get('PP Friend check').data;
+  assert.deepEqual(check[0], ['Name', 'Classmate', 'Request', 'Result', 'Why']);
+  assert.deepEqual(check.slice(2).map(r => [r[3], r[4]]), [['Not applied', 'Use is not checked'], ['Not applied', 'Email or classmate email is blank']]);
+  assert.ok(['Together', 'Not together'].includes(check[1][3]) && check[1][4]);
+  const summary = new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  assert.equal(summary.get('Friend requests'), 'Used');
+  assert.equal(summary.get('"With" requests met') + summary.get('"With" requests not met'), 1);
+  // Turned off, the groups match a run without the tab, and every request says so.
+  const plain = practiceRun('Without friend requests'), off = fixture(true); off.adapter.practice();
+  off.sheets.set('Friend requests', new Sheet('Friend requests', f.sheets.get('Friend requests').data.map(r => r.slice())));
+  off.adapter.sort('Friend requests off');
+  for (const tab of GRADE_TABS) assert.deepEqual(off.sheets.get(tab).data, plain.f.sheets.get(tab).data);
+  assert.ok(off.sheets.get('PP Friend check').data.slice(1).every(r => r[3] === 'Not applied' && r[4] === 'Friend requests are turned off in Settings'));
+});
+test('Check again reports a "Not with" pair put together by hand and rebuilds PP Friend check', () => {
+  const { f, run } = practiceRun('Not with practice', f => {
+    f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+    f.sheets.get('Friend requests').data.push(['Practice Student 001', 12, 'Not with', 'Practice Student 002', 12, false, '', '', true, '', 'practice1@example.org', 'practice2@example.org']);
+  });
+  const one = placedRows(f, run).find(x => x.row[0] === 'practice1@example.org'), two = placedRows(f, run).find(x => x.row[0] === 'practice2@example.org');
+  assert.ok(!f.sheets.get('PP Check').data.some(r => r[1] === 'NOT_WITH_TOGETHER'));
+  two.row[2] = one.row[2]; two.row[3] = one.row[3];
+  const checks = f.adapter.checkAgain();
+  assert.ok(checks.some(c => c.code === 'NOT_WITH_TOGETHER' && c.severity === 'error'));
+  assert.deepEqual(f.sheets.get('PP Friend check').data[1].slice(3), ['Together', 'In the same group']);
+});
+
+test('Setup adds followChecksOverTrack and keeps its value; PP Needs you and PP Summary list students whose answer and checks disagree, also after Check again', () => {
+  const f = fixture(true); f.adapter.practice();
+  const settings = f.sheets.get('Settings').data, setting = () => settings.find(r => r[0] === 'followChecksOverTrack');
+  assert.deepEqual(setting(), ['followChecksOverTrack', false, "TRUE: a student whose Major or Minor answer doesn't match the projects they checked is placed by what they checked."]);
+  // A sheet from before this setting uses FALSE, and Setup adds the row. A value already there stays.
+  settings.splice(settings.indexOf(setting()), 1);
+  assert.equal(f.adapter.readSettings().followChecksOverTrack, false);
+  f.adapter.setup(); assert.equal(setting()[1], false);
+  setting()[1] = true; f.adapter.setup(); assert.equal(setting()[1], true);
+  setting()[1] = false;
+  // Practice Student 001 said Major. Now they checked only two Minors.
+  f.sheets.get('Senior').data[1][7] = 'Cooking for Comfort; Culture and Cuisine';
+  const id = 'practice1@example.org', needs = () => (f.sheets.get('PP Needs you').data.find(r => r[0] === id) || [])[5] || '';
+  const count = () => new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]])).get('Students whose Major or Minor answer and checks disagree');
+  const grade = () => f.sheets.get('PP Senior').data.find(r => r[0] === id);
+  let result = f.adapter.sort('Answer and checks disagree');
+  assert.ok(['cooking-for-comfort', 'culture-and-cuisine'].every(p => result.projects.some(x => x.id === p && x.finalLength === 'Minor')));
+  for (const run of [() => {}, () => f.adapter.checkAgain()]) {
+    run();
+    assert.match(grade()[2], /^MAJ-/); assert.match(needs(), /Said Major but checked no running Major\./); assert.equal(count(), '1 (followChecksOverTrack is off)');
+  }
+  setting()[1] = true;
+  result = f.adapter.sort('Follow what they checked');
+  for (const run of [() => {}, () => f.adapter.checkAgain()]) {
+    run();
+    assert.deepEqual([grade()[2], grade()[3]].sort(), ['MIN-Cooking for Comfort', 'MIN-Culture and Cuisine']);
+    assert.match(grade()[7], / Said Major but checked only Minor projects, so placed by what they checked\.$/);
+    assert.match(needs(), /Said Major but placed in Minors they checked\. Move them to a Major on their grade tab if you'd rather\./);
+    assert.equal(count(), '1 (followChecksOverTrack is on)');
+  }
+  // Moved back to a Major by hand, the student is locked, so the row and the count go.
+  const major = saved(f).projects.find(p => p.finalLength === 'Major'); grade()[2] = grade()[3] = label(major);
+  f.adapter.checkAgain();
+  assert.doesNotMatch(needs(), /Said Major/); assert.equal(count(), '0 (followChecksOverTrack is on)');
+});
+
+test('Setup adds Max size to an older Project choices tab and keeps its values; a Max size reaches the sort and PP Summary', () => {
+  const f = fixture(true); f.adapter.practice();
+  const choices = f.sheets.get('Project choices').data;
+  assert.equal(choices[0][7], 'Max size');
+  // Make it look like a tab from before this round, with a decision in it.
+  choices.forEach(r => r.splice(7, 1)); choices[1][2] = true;
+  const before = JSON.stringify(choices);
+  f.adapter.setup();
+  assert.equal(choices[0][7], 'Max size');
+  assert.equal(JSON.stringify(choices.map(r => r.slice(0, 7))), before);
+  const plain = f.adapter.sort('No Max size');
+  const popular = plain.projects.filter(p => p.finalLength === 'Major').map(p => p.id)[0];
+  const sizeOf = r => r.assignments.filter(a => a.project1 === popular).length;
+  choices.find(r => r[0] === popular)[7] = 14;
+  const big = f.adapter.sort('Max size 14');
+  assert.ok(sizeOf(big) >= sizeOf(plain) && sizeOf(big) <= 14);
+  const summary = new Map(f.sheets.get('PP Summary').data.slice(1).map(r => [r[0], r[1]]));
+  assert.equal(summary.get('Group size: ' + big.projects.find(p => p.id === popular).name), sizeOf(big));
+  assert.match(String(summary.get('Group size: ' + big.projects.find(p => p.finalLength === 'Minor').name)), /^Week 1: \d+, week 2: \d+$/);
+  choices.find(r => r[0] === popular)[7] = 15;
+  assert.throws(() => f.adapter.sort('Too big'), /Max size must be a whole number from 1 to 14/);
 });

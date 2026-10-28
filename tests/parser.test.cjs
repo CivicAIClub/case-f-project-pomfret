@@ -64,10 +64,10 @@ test('the same name and email in two grades stays in review',()=>{
 });
 test('a shared email gender row is not guessed for either student; a Student ID row is used',()=>{
   const t=table([row('shared@example.org','Example, Avery'),row('shared@example.org','Sample, Jordan','2026-10-02T12:00:00Z')]);
-  let result=parser.prepare([t],projects,{genders:[{email:'shared@example.org',gender:'Group A'}]});
+  let result=parser.prepare([t],projects,{genders:[{email:'shared@example.org',gender:'Girl'}]});
   assert.ok(result.students.every(s=>s.gender===null)); assert.equal(result.issues.filter(i=>i.code==='GENDER_SHARED_EMAIL').length,2);
-  result=parser.prepare([t],projects,{genders:[{email:'shared@example.org:sample-jordan',gender:'Group B'}]});
-  assert.equal(result.students.find(s=>s.name==='Sample, Jordan').gender,'group b'); assert.equal(result.students.find(s=>s.name==='Example, Avery').gender,null);
+  result=parser.prepare([t],projects,{genders:[{email:'shared@example.org:sample-jordan',gender:'BOY'}]});
+  assert.equal(result.students.find(s=>s.name==='Sample, Jordan').gender,'Male'); assert.equal(result.students.find(s=>s.name==='Example, Avery').gender,null);
   result=parser.prepare([t],projects,{statusChanges:[{email:'shared@example.org:example-avery',status:'trip',why:'Confirmed trip list'}]});
   assert.equal(result.students.find(s=>s.name==='Example, Avery').status,'trip');
 });
@@ -191,7 +191,7 @@ test('status overrides require reason and unambiguous identity, and cannot mask 
 });
 test('gender only from supplied map; conflicting values remain unknown',()=>{
   const r=row(); assert.equal(parser.prepare([table([r])],projects).students[0].gender,null);
-  const result=parser.prepare([table([r])],projects,{genders:[{email:r[1],gender:'Group A'},{email:r[1],gender:'Group B'}]});
+  const result=parser.prepare([table([r])],projects,{genders:[{email:r[1],gender:'F'},{email:r[1],gender:'M'}]});
   assert.equal(result.students[0].gender,null); assert.ok(result.issues.some(i=>i.code==='CONFLICTING_GENDER'));
 });
 test('status override cannot bypass a required preference, and an unread prior project needs no override',()=>{
@@ -204,8 +204,8 @@ test('status override cannot bypass a required preference, and an unread prior p
 test('explicit no-prior answers and supplied gender capitalization normalize consistently',()=>{
   const a=row(); a[3]='I did not participate in Project: Pomfret';
   const b=row('new@example.org','Example, New'); b[3]='I was not in a Project last year';
-  const result=parser.prepare([table([a,b])],projects,{genders:[{email:a[1],gender:'Group A'},{email:a[1],gender:'group a'}]});
-  assert.ok(result.students.every(s=>s.previousKnown && s.previous.length===0 && s.status==='eligible')); assert.equal(result.students.find(s=>s.email===a[1]).gender,'group a');
+  const result=parser.prepare([table([a,b])],projects,{genders:[{email:a[1],gender:'Female'},{email:a[1],gender:' f '}]});
+  assert.ok(result.students.every(s=>s.previousKnown && s.previous.length===0 && s.status==='eligible')); assert.equal(result.students.find(s=>s.email===a[1]).gender,'Female');
 });
 test('schema failures stop rather than quietly treating missing project choice columns as zero interest',()=>{
   const t=table([row()]); t.values[0][7]='Something unrecognized'; assert.throws(()=>parser.prepare([t],projects),/missing UN goals, Types or project checkbox/);
@@ -222,4 +222,11 @@ test('malformed dates and preferences enter review rather than fabricated eligib
 });
 test('goal vocabulary accepts recorded spelling variants and canonical numeric lists',()=>{
   assert.deepEqual(parser.canonicalGoals(['Good Health','Reduced Inequalties','3, 12','Gender Equality']),['3','10','12','5']);
+});
+test('gender reads M, Male, Boy, F, Female and Girl in any case, and anything else is unknown',()=>{
+  const rows=['M','male','BOY','f','Female','girl','Nonbinary',''].map((g,i)=>row('g'+i+'@example.org','Example, G'+i));
+  const genders=['M','male','BOY','f','Female','girl','Nonbinary',''].map((g,i)=>({email:'g'+i+'@example.org',gender:g}));
+  const result=parser.prepare([table(rows)],projects,{genders});
+  assert.deepEqual(rows.map((r,i)=>result.students.find(s=>s.email==='g'+i+'@example.org').gender),['Male','Male','Male','Female','Female','Female',null,null]);
+  assert.ok(result.issues.some(i=>i.code==='GENDER_UNKNOWN_VALUE'&&/^2 Gender rows are blank or say something other than Male or Female/.test(i.message)));
 });
