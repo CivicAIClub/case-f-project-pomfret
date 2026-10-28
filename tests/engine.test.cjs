@@ -108,7 +108,7 @@ test('240-student synthetic run is complete, bounded and reproducible',()=>{
   assert.equal(r.summary.placed,240);assert.equal(r.summary.minorStudents,88);assert.equal(r.summary.projectCount,23);assert.deepEqual(errors(r),[]);assert.equal(r.fingerprint,E.sort(students,projects,{},{}).fingerprint);assert.ok(Date.now()-start<15000);
 });
 
-test('explain gives the fit, reason and flags the sort wrote, and a move by hand drops the Minor target note',()=>{
+test('explain gives the fit, reason and flags the sort wrote, and a move by hand drops the Minor minimum note',()=>{
   const projects=[p('a','Major'),p('m1','Minor'),p('m2','Minor')],cfg=config({projectCount:3,minorProjects:2,minorMin:3,minorTarget:3,minorMax:3});
   const students=[s('minor',{grade:12,preference:'Minor'}),s('unsure',{grade:12,preference:'Not sure'}),s('soph',{grade:10}),s('junior',{grade:11}),s('senior',{grade:12,status:'late'})];
   const r=E.sort(students,projects,cfg,{});
