@@ -597,6 +597,55 @@ test('with Max size blank everywhere the groups match a run without it',()=>{
   const {projects,cfg,students}=sizeRun();
   assert.deepEqual(E.sort(students,projects,cfg,{a:{maxSize:null},b:{maxSize:null},c:{maxSize:null}}).assignments,E.sort(students,projects,cfg,{}).assignments);
 });
+// Thirty Major students over three Majors, so the even split is ten. Some checked a; the others
+// checked neither project and fit a at 5, b and c at 6, so they would all rather be in a.
+const reservedRun=fans=>({projects:[p('a'),p('b','Major',{types:['feet'],goals:['9']}),p('c','Major',{types:['eyes'],goals:['8']})],cfg:config({minSize:8,targetSize:10,maxSize:10,projectCount:3}),
+  students:[...Array.from({length:fans},(_,i)=>s('fan'+i,{choices:['a','z']})),...Array.from({length:30-fans},(_,i)=>s('other'+i,{choices:['y','z']}))]});
+const inGroup=(r,id,prefix)=>r.assignments.filter(a=>a.project1===id&&a.studentId.startsWith(prefix)).length;
+test('a Major\'s seats above its even split go only to students who checked it',()=>{
+  // a's even split is ten and its Max size 14. Students who didn't check a fill seats 1 to 10 at most.
+  let {projects,cfg,students}=reservedRun(2),r=E.sort(students,projects,cfg,{a:{maxSize:14}});
+  assert.deepEqual([inGroup(r,'a','other'),inGroup(r,'a','fan'),groupSize(r,'a')],[10,2,12]);
+  assert.equal(r.summary.placed,30); assert.deepEqual(errors(r),[]);
+  // Students who checked a take seats 11 to 14.
+  ({projects,cfg,students}=reservedRun(4)); r=E.sort(students,projects,cfg,{a:{maxSize:14}});
+  assert.deepEqual([inGroup(r,'a','other'),inGroup(r,'a','fan'),groupSize(r,'a')],[10,4,14]);
+  // Locked students take open seats first: with two who didn't check a locked into it, eight more join them.
+  ({projects,cfg,students}=reservedRun(2));
+  const locks=['other0','other1'].map((id,i)=>({email:id+'@example.org',name:'',project1:'a',project2:'',row:i+2}));
+  r=E.sort(students,projects,cfg,{a:{maxSize:14}},{locks});
+  assert.deepEqual([inGroup(r,'a','other'),inGroup(r,'a','fan'),groupSize(r,'a')],[10,2,12]);
+  // Without a Max size, a keeps its even split.
+  assert.equal(groupSize(E.sort(students,projects,cfg,{}),'a'),10);
+});
+test('when the only room left is in a Major with a Max size, students who didn\'t check it still get in and nobody is left out',()=>{
+  // b holds ten. a's even split is ten and its Max size 14, and only two students checked it. The
+  // retry opens a's seats to everyone one at a time until all 24 are placed.
+  const projects=[p('a'),p('b','Major',{goals:['9']})],cfg=config({minSize:8,targetSize:10,maxSize:10});
+  const students=[...Array.from({length:2},(_,i)=>s('fan'+i,{choices:['a','z']})),...Array.from({length:22},(_,i)=>s('b'+i,{choices:['b','z'],goals:['9']}))];
+  const r=E.sort(students,projects,cfg,{a:{maxSize:14}});
+  assert.deepEqual([r.summary.placed,r.summary.needsReview,groupSize(r,'a'),groupSize(r,'b'),inGroup(r,'a','b')],[24,0,14,10,12]);
+  assert.ok(r.issues.some(i=>i.code==='QUOTA_RELAXED'));
+});
+test('a Max size below a Major\'s even split still caps it',()=>{
+  // Thirty-nine students over three Majors, so the even split is 13, and all of them checked a.
+  const projects=[p('a'),p('b','Major',{goals:['9']}),p('c','Major',{goals:['8']})],cfg=config({minSize:8,targetSize:12,maxSize:14,projectCount:3});
+  const students=Array.from({length:39},(_,i)=>s('s'+i,{choices:['a','z']}));
+  assert.equal(groupSize(E.sort(students,projects,cfg,{}),'a'),13);
+  const r=E.sort(students,projects,cfg,{a:{maxSize:12}});
+  assert.equal(groupSize(r,'a'),12); assert.equal(r.summary.placed,39);
+  assert.deepEqual(r.checks.filter(c=>c.code==='OVER_CAPACITY'),[]);
+});
+test('a Minor with a Max size keeps the old rule: anyone can fill it up to the Max size',()=>{
+  // Thirty Minor students over three Minors, so the even split is ten a week. Two checked m1; the
+  // others checked nothing running and fit m1 at 5, m2 and m3 at 6.
+  const projects=[p('m1','Minor'),p('m2','Minor',{types:['feet'],goals:['9']}),p('m3','Minor',{types:['eyes'],goals:['8']})];
+  const cfg=config({minSize:8,targetSize:10,maxSize:10,projectCount:3,minorProjects:3,minorMin:30,minorTarget:30,minorMax:30});
+  const students=[...Array.from({length:2},(_,i)=>s('fan'+i,{preference:'Minor',choices:['m1','z']})),...Array.from({length:28},(_,i)=>s('other'+i,{preference:'Minor',choices:['y','z']}))];
+  const r=E.sort(students,projects,cfg,{m1:{maxSize:14}}),m1=r.summary.groups.find(g=>g.id==='m1');
+  assert.deepEqual(m1.sizes,[14,14]); assert.equal(r.summary.placed,30);
+  assert.equal(r.assignments.filter(a=>a.studentId.startsWith('other')&&[a.project1,a.project2].includes('m1')).length,26);
+});
 
 test('a project a student checked comes before fit: seniors keep checked seats, and a senior\'s better fit never costs a younger student one',()=>{
   const cfg=config({maxSize:1,targetSize:1}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);

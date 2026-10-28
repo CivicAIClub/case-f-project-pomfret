@@ -236,8 +236,12 @@ var PPEngine = (function () {
   // never loses a project they checked to help a younger student, and a better fit for a senior never
   // costs a younger student a project they checked. Potentials make residual reverse edges usable
   // with Dijkstra. The tie order, through the order of the students, settles what is still equal.
-  function assignFlow(members,projects,cfg,choices,capacity,floor,run){
-    var n=members.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[],total=0,units=[0,0,0,0],below=0;
+  // extra[pid] seats sit on a second node for that project, which only students who checked it
+  // reach. They come in through that node by one edge, so nobody takes two seats in one project.
+  function assignFlow(members,projects,cfg,choices,capacity,floor,run,extra){
+    extra=extra||{};
+    var n=members.length,m=projects.length,sink=1+n+m,reserved=projects.filter(function(p){return extra[p.id]>0;}),side={},V=sink+1+reserved.length,graph=Array.from({length:V},function(){return [];}),links=[],total=0,units=[0,0,0,0],below=0;
+    reserved.forEach(function(p,k){side[p.id]=sink+1+k;});
     function edge(u,v,cap,c0,c1,c2){var a={to:v,rev:graph[v].length,cap:cap,c0:c0,c1:c1,c2:c2},b={to:u,rev:graph[u].length,cap:0,c0:-c0,c1:-c1,c2:-c2};graph[u].push(a);graph[v].push(b);return a;}
     function level(s){return run.last(s)?0:s.grade===12?3:s.grade===11?2:1;}
     function kept(s,p){var before=run.previous[s.id];return before&&before.project1!==p.id&&before.project2!==p.id?1:0;}
@@ -247,9 +251,12 @@ var PPEngine = (function () {
     var place=[below+1],miss=[1],stable=total+1;
     for(var k=1;k<4;k++){place[k]=place[k-1]*(units[k-1]+1);miss[k]=miss[k-1]*(units[k-1]+1);}
     if(Math.max(place[3]*(units[3]+1),miss[3]*(units[3]+1),11*stable*(total+1))*4*V>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
-    members.forEach(function(mem,i){var s=mem.s,lv=level(s);edge(0,1+i,mem.units,-place[lv],0,0);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,0,f.checked?0:miss[lv],(f.tier-1)*(lv===3?2:1)*stable+kept(s,p));links.push({student:s.id,project:p.id,edge:e});}});});
+    members.forEach(function(mem,i){var s=mem.s,lv=level(s);edge(0,1+i,mem.units,-place[lv],0,0);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,f.checked&&side[p.id]?side[p.id]:1+n+j,1,0,f.checked?0:miss[lv],(f.tier-1)*(lv===3?2:1)*stable+kept(s,p));links.push({student:s.id,project:p.id,edge:e});}});});
     // A seat that brings a group up to the minimum comes right after placing everyone.
     projects.forEach(function(p,j){var low=floor[p.id]||0;if(low)edge(1+n+j,sink,low,-1,0,0);edge(1+n+j,sink,(capacity[p.id]||0)-low,0,0,0);});
+    // From the second node a student who checked the project takes a normal seat or an extra one,
+    // at the same cost.
+    reserved.forEach(function(p){var j=projects.indexOf(p);edge(side[p.id],1+n+j,total,0,0,0);edge(side[p.id],sink,extra[p.id],0,0,0);});
     var p0=new Float64Array(V),p1=new Float64Array(V),p2=new Float64Array(V),known=new Uint8Array(V);known[0]=1;
     for(var round=0;round<V;round++){var changed=false;for(var u=0;u<V;u++){if(!known[u])continue;graph[u].forEach(function(e){if(e.cap<=0)return;var a0=p0[u]+e.c0,a1=p1[u]+e.c1,a2=p2[u]+e.c2;if(!known[e.to]||less(a0,a1,a2,p0[e.to],p1[e.to],p2[e.to])){p0[e.to]=a0;p1[e.to]=a1;p2[e.to]=a2;known[e.to]=1;changed=true;}});}if(!changed)break;}
     var d0=new Float64Array(V),d1=new Float64Array(V),d2=new Float64Array(V),reached=new Uint8Array(V),seen=new Uint8Array(V),prevNode=new Int32Array(V),prevEdge=new Int32Array(V),flow=0;
@@ -317,15 +324,20 @@ var PPEngine = (function () {
     run.leading=leaders(students.filter(function(s){return !run.locked[s.id];}),projects,choices,issues,run);run.last=function(s){return placedLast(s,run);};
     var groups=cohort(students,projects,cfg,issues,run),leading=run.leading,locked=run.locked,byId={},majorProjects=projects.filter(function(p){return p.finalLength==='Major';}),minorProjects=projects.filter(function(p){return p.finalLength==='Minor';});
     projects.forEach(function(p){byId[p.id]=p;});
-    // Locks and leaders fill their seats first, so the flow gets only the seats left over.
-    // A project with a Max size may grow up to it when more students want it and it fits them better.
-    // Other projects keep the even split, and then every group fills to the minimum first.
+    // Locks and leaders fill their seats first, so the flow gets only the seats left over. quota is
+    // how many seats are open to everyone. Every project starts at the even split. A Major with a
+    // Max size keeps its even split (or minSize, if that's bigger) open to everyone, and its seats
+    // from there up to the Max size are only for students who checked it. A Minor with a Max size
+    // may grow to it with anyone. When a project has a Max size, every group fills to the minimum
+    // first. If a student can't be placed, every quota below its project's limit grows by one,
+    // including a Major's open seats, and the flow runs again.
     function solve(members,list,units,fixed,total){
       var quota=quotas(total,list,cfg,scores),assigned={},relaxed=false,sized=list.some(function(p){return Number.isInteger(choiceFor(choices,p.id).maxSize);});
-      list.forEach(function(p){if(Number.isInteger(choiceFor(choices,p.id).maxSize))quota[p.id]=limit(p,cfg,choices);});
+      function reserved(p){return p.finalLength==='Major'&&Number.isInteger(choiceFor(choices,p.id).maxSize);}
+      list.forEach(function(p){if(Number.isInteger(choiceFor(choices,p.id).maxSize))quota[p.id]=reserved(p)?Math.min(limit(p,cfg,choices),Math.max(quota[p.id],cfg.minSize)):limit(p,cfg,choices);});
       for(var attempt=0;attempt<=14;attempt++){
-        var capacity={},floor={};list.forEach(function(p){capacity[p.id]=Math.max(0,quota[p.id]*units-(fixed[p.id]||0));floor[p.id]=sized?Math.min(capacity[p.id],Math.max(0,cfg.minSize*units-(fixed[p.id]||0))):0;});
-        assigned=assignFlow(members,list,cfg,choices,capacity,floor,run);
+        var capacity={},floor={},extra={};list.forEach(function(p){var have=fixed[p.id]||0;capacity[p.id]=Math.max(0,quota[p.id]*units-have);floor[p.id]=sized?Math.min(capacity[p.id],Math.max(0,cfg.minSize*units-have)):0;if(reserved(p))extra[p.id]=Math.max(0,limit(p,cfg,choices)-Math.max(quota[p.id],have));});
+        assigned=assignFlow(members,list,cfg,choices,capacity,floor,run,extra);
         if(members.every(function(mem){return assigned[mem.s.id].length===mem.units;}))break;
         var expandable=list.filter(function(p){return quota[p.id]<limit(p,cfg,choices);});if(!expandable.length)break;
         expandable.forEach(function(p){quota[p.id]++;});relaxed=true;
