@@ -460,3 +460,17 @@ test('with Max size blank everywhere the groups match a run without it',()=>{
   const {projects,cfg,students}=sizeRun();
   assert.deepEqual(E.sort(students,projects,cfg,{a:{maxSize:null},b:{maxSize:null},c:{maxSize:null}}).assignments,E.sort(students,projects,cfg,{}).assignments);
 });
+
+test('a project a student checked comes before fit: seniors keep checked seats, and a senior\'s better fit never costs a younger student one',()=>{
+  const cfg=config({maxSize:1,targetSize:1}),at=(r,id)=>r.assignments.find(a=>a.studentId===id);
+  // One seat left in a, and both checked it; b suits neither of them. The senior gets a.
+  let r=E.sort([s('senior',{grade:12}),s('soph',{grade:10})],[p('a'),p('b','Major',{types:['feet'],goals:['1']})],cfg,{});
+  assert.equal(at(r,'senior').project1,'a'); assert.equal(at(r,'soph').project1,'b');
+  // The senior fits a at 1 and b at 2 and checked both; the sophomore checked only a. The senior
+  // takes b so the sophomore gets the project they checked.
+  r=E.sort([s('senior',{grade:12,choices:['a','b']}),s('soph',{grade:10})],[p('a'),p('b','Major',{goals:['9']})],cfg,{});
+  assert.deepEqual([at(r,'senior').project1,at(r,'senior').fit1,at(r,'soph').project1,at(r,'soph').fit1],['b',2,'a',1]);
+  // When both stay in checked projects, a senior's step of fit counts twice a junior's.
+  r=E.sort([s('senior',{grade:12,choices:['a','b']}),s('junior',{grade:11,choices:['a','b']})],[p('a'),p('b','Major',{goals:['9']})],cfg,{});
+  assert.equal(at(r,'senior').project1,'a');
+});

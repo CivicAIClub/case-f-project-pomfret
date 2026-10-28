@@ -1,7 +1,7 @@
 /* Deterministic, local-only placement prototype. The cohort is selected before
  * optimization: Minor-preference students, then the Not-sure students who checked
- * the most running Minors. Within each Major/Minor cohort, total fit is optimized in
- * lexicographic senior/junior/sophomore/green order. This does not guarantee
+ * the most running Minors. Within each Major/Minor cohort, the flow first keeps students
+ * in projects they checked, seniors first, then improves fit. This does not guarantee
  * ordered grade means or a globally best cohort/project plan. Balanced quotas
  * are relaxed within the cap when needed; incomplete results are not proofs
  * that all possible plans fail. */
@@ -196,34 +196,41 @@ var PPEngine = (function () {
     var n=Math.min(count,sorted.length*cfg.maxSize),base=Math.floor(n/sorted.length),extra=n%sorted.length;
     sorted.forEach(function(p,i){result[p.id]=base+(i<extra?1:0);});return result;
   }
-  // Successive shortest augmenting paths. Potentials make residual reverse edges usable with
-  // Dijkstra. Costs, most important first: placing everyone, then seniors' fit, juniors' fit,
-  // sophomores' fit and the fit of students placed last, then keeping last run's placement. Each
-  // level outweighs everything below it can add up to, so keeping a placement never costs anyone
-  // fit or seniority. The tie order, through the order of the students, settles what is still equal.
+  // Successive shortest augmenting paths. Each cost has three parts, compared in order:
+  //   1. placing everyone, seniors first, then filling every group to the minimum;
+  //   2. how many seniors are in a project they didn't check, then juniors, sophomores and the
+  //      students placed last;
+  //   3. the fit number, seniors counted twice, then keeping last run's placement.
+  // Within a part, each level's weight is more than everything below it can add up to, so a senior
+  // never loses a project they checked to help a younger student, and a better fit for a senior never
+  // costs a younger student a project they checked. Potentials make residual reverse edges usable
+  // with Dijkstra. The tie order, through the order of the students, settles what is still equal.
   function assignFlow(members,projects,cfg,choices,capacity,floor,run){
-    var n=members.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[],total=0,levels=[0,0,0,0],most=1;
-    function edge(u,v,cap,cost){var a={to:v,rev:graph[v].length,cap:cap,cost:cost,initial:cap},b={to:u,rev:graph[u].length,cap:0,cost:-cost,initial:0};graph[u].push(a);graph[v].push(b);return a;}
+    var n=members.length,m=projects.length,sink=1+n+m,V=sink+1,graph=Array.from({length:V},function(){return [];}),links=[],total=0,units=[0,0,0,0],below=0;
+    function edge(u,v,cap,c0,c1,c2){var a={to:v,rev:graph[v].length,cap:cap,c0:c0,c1:c1,c2:c2},b={to:u,rev:graph[u].length,cap:0,c0:-c0,c1:-c1,c2:-c2};graph[u].push(a);graph[v].push(b);return a;}
     function level(s){return run.last(s)?0:s.grade===12?3:s.grade===11?2:1;}
     function kept(s,p){var before=run.previous[s.id];return before&&before.project1!==p.id&&before.project2!==p.id?1:0;}
-    members.forEach(function(mem){levels[level(mem.s)]++;total+=mem.units;most=Math.max(most,mem.units);});
-    var base=5*most*Math.max.apply(null,levels)+1,stable=total+1;
-    // A seat that brings a group up to the minimum is worth more than any change in fit.
-    var bonus=6*Math.pow(base,3)*stable;
-    if(12*stable*Math.pow(base,3)*V>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
-    members.forEach(function(mem,i){var s=mem.s,w=Math.pow(base,level(s));edge(0,1+i,mem.units,-6*w*stable);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,(f.tier-1)*w*stable+kept(s,p));links.push({student:s.id,project:p.id,edge:e});}});});
-    projects.forEach(function(p,j){var low=floor[p.id]||0;if(low)edge(1+n+j,sink,low,-bonus);edge(1+n+j,sink,(capacity[p.id]||0)-low,0);});
-    var potential=Array(V).fill(Infinity);potential[0]=0;
-    for(var k=0;k<V;k++){var changed=false;for(var u=0;u<V;u++){if(!isFinite(potential[u]))continue;graph[u].forEach(function(e){if(e.cap>0&&potential[e.to]>potential[u]+e.cost){potential[e.to]=potential[u]+e.cost;changed=true;}});}if(!changed)break;}
-    potential=potential.map(function(x){return isFinite(x)?x:0;});
-    var flow=0;
+    function less(a0,a1,a2,b0,b1,b2){return a0<b0||(a0===b0&&(a1<b1||(a1===b1&&a2<b2)));}
+    members.forEach(function(mem){units[level(mem.s)]+=mem.units;total+=mem.units;});
+    projects.forEach(function(p){below+=floor[p.id]||0;});
+    var place=[below+1],miss=[1],stable=total+1;
+    for(var k=1;k<4;k++){place[k]=place[k-1]*(units[k-1]+1);miss[k]=miss[k-1]*(units[k-1]+1);}
+    if(Math.max(place[3]*(units[3]+1),miss[3]*(units[3]+1),11*stable*(total+1))*4*V>Number.MAX_SAFE_INTEGER)throw new Error('There are too many students for this version of the sorter.');
+    members.forEach(function(mem,i){var s=mem.s,lv=level(s);edge(0,1+i,mem.units,-place[lv],0,0);projects.forEach(function(p,j){if(p.id!==mem.skip&&allowed(s,p,choices)){var f=fit(s,p,cfg),e=edge(1+i,1+n+j,1,0,f.checked?0:miss[lv],(f.tier-1)*(lv===3?2:1)*stable+kept(s,p));links.push({student:s.id,project:p.id,edge:e});}});});
+    // A seat that brings a group up to the minimum comes right after placing everyone.
+    projects.forEach(function(p,j){var low=floor[p.id]||0;if(low)edge(1+n+j,sink,low,-1,0,0);edge(1+n+j,sink,(capacity[p.id]||0)-low,0,0,0);});
+    var p0=new Float64Array(V),p1=new Float64Array(V),p2=new Float64Array(V),known=new Uint8Array(V);known[0]=1;
+    for(var round=0;round<V;round++){var changed=false;for(var u=0;u<V;u++){if(!known[u])continue;graph[u].forEach(function(e){if(e.cap<=0)return;var a0=p0[u]+e.c0,a1=p1[u]+e.c1,a2=p2[u]+e.c2;if(!known[e.to]||less(a0,a1,a2,p0[e.to],p1[e.to],p2[e.to])){p0[e.to]=a0;p1[e.to]=a1;p2[e.to]=a2;known[e.to]=1;changed=true;}});}if(!changed)break;}
+    var d0=new Float64Array(V),d1=new Float64Array(V),d2=new Float64Array(V),reached=new Uint8Array(V),seen=new Uint8Array(V),prevNode=new Int32Array(V),prevEdge=new Int32Array(V),flow=0;
     while(flow<total){
-      var dist=Array(V).fill(Infinity),seen=Array(V).fill(false),prevNode=Array(V).fill(-1),prevEdge=Array(V).fill(-1);dist[0]=0;
-      for(var step=0;step<V;step++){var v=-1;for(var d=0;d<V;d++)if(!seen[d]&&(v<0||dist[d]<dist[v]))v=d;if(v<0||!isFinite(dist[v]))break;seen[v]=true;
-        graph[v].forEach(function(e,ei){if(e.cap<=0||seen[e.to])return;var nd=dist[v]+e.cost+potential[v]-potential[e.to];if(nd<dist[e.to]){dist[e.to]=nd;prevNode[e.to]=v;prevEdge[e.to]=ei;}});
+      reached.fill(0);seen.fill(0);d0[0]=0;d1[0]=0;d2[0]=0;reached[0]=1;
+      for(var step=0;step<V;step++){
+        var v=-1;for(var x=0;x<V;x++)if(reached[x]&&!seen[x]&&(v<0||less(d0[x],d1[x],d2[x],d0[v],d1[v],d2[v])))v=x;
+        if(v<0)break;seen[v]=1;
+        graph[v].forEach(function(e,ei){if(e.cap<=0||seen[e.to])return;var t=e.to,n0=d0[v]+e.c0+p0[v]-p0[t],n1=d1[v]+e.c1+p1[v]-p1[t],n2=d2[v]+e.c2+p2[v]-p2[t];if(!reached[t]||less(n0,n1,n2,d0[t],d1[t],d2[t])){d0[t]=n0;d1[t]=n1;d2[t]=n2;reached[t]=1;prevNode[t]=v;prevEdge[t]=ei;}});
       }
-      if(!isFinite(dist[sink]))break;
-      for(var z=0;z<V;z++)if(isFinite(dist[z]))potential[z]+=dist[z];
+      if(!reached[sink])break;
+      for(var z=0;z<V;z++)if(reached[z]){p0[z]+=d0[z];p1[z]+=d1[z];p2[z]+=d2[z];}
       var at=sink;while(at!==0){var from=prevNode[at],e=graph[from][prevEdge[at]];e.cap--;graph[at][e.rev].cap++;at=from;}flow++;
     }
     var result={};members.forEach(function(mem){result[mem.s.id]=[];});links.forEach(function(l){if(l.edge.cap===0)result[l.student].push(l.project);});return result;
