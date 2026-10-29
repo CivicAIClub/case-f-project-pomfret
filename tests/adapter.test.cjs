@@ -5,16 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const {Sheet, newDataValidation} = require('./helpers/fake-spreadsheet.cjs');
+const {Sheet, newDataValidation, spreadsheetFor} = require('./helpers/fake-spreadsheet.cjs');
 const realEngine = require('../core/engine.js');
 function fixture(useRealCore = false) {
-  const sheets = new Map();
-  const spreadsheet = {
-    getSheetByName: name => sheets.get(name) || null,
-    insertSheet: name => { const s = new Sheet(name); sheets.set(name, s); return s; },
-    getSheets: () => [...sheets.values()],
-    deleteSheet: sheet => { sheets.delete(sheet.name); }
-  };
+  const sheets = new Map(), spreadsheet = spreadsheetFor(sheets);
   const catalog = [
     { id: 'robotics', name: 'Robotics', length: 'Major', types: ['hands'], goals: ['9'], aliases: [], enabled: true },
     { id: 'cooking', name: 'Cooking', length: 'Minor', types: ['hands'], goals: ['3'], aliases: [], enabled: true },
@@ -46,7 +40,7 @@ function fixture(useRealCore = false) {
     sheets.set('Projects', new Sheet('Projects', [['Project', 'Length'], ['Robotics', 'Major']]));
     ['Senior', 'Junior', 'Sophomore'].forEach((name, i) => sheets.set(name, new Sheet(name, [['Timestamp', 'Email Address', 'Name', 'Comments'], ['2026-10-20', 'practice' + i + '@example.org', 'Practice Student ' + i, '=IMPORTXML("unsafe")']])));
   }
-  return { adapter, sheets, catalog, context, source, engine, checked: () => checkedAssignments, released: () => released };
+  return { adapter, sheets, spreadsheet, catalog, context, source, engine, checked: () => checkedAssignments, released: () => released };
 }
 function saved(f) {
   const run = { students: new Map(), assignments: new Map(), projects: [] };
@@ -105,7 +99,7 @@ test('sort creates roster outputs, keeps comments as text in PP Students and app
   const master = f.sheets.get('PP Senior').data, students = f.sheets.get('PP Students').data;
   assert.equal(master[1][2], 'MAJ-Robotics');
   assert.equal(master[1][3], 'MAJ-Robotics');
-  assert.equal(master[0].length, 9);
+  assert.equal(master[0].length, 10); assert.equal(master[0][9], 'Friend requests');
   assert.equal(students[1][students[0].indexOf('Student comment')], "'=IMPORTXML(\"unsafe\")");
   assert.equal(f.sheets.get('PP Run log').data.length, 2);
   f.adapter.sort('Same settings reproducibility check');
@@ -579,7 +573,10 @@ test('friend requests are read by header name, use only rows marked Use, and fil
   const plain = practiceRun('Without friend requests'), off = fixture(true); off.adapter.practice();
   off.sheets.set('Friend requests', new Sheet('Friend requests', f.sheets.get('Friend requests').data.map(r => r.slice())));
   off.adapter.sort('Friend requests off');
-  for (const tab of GRADE_TABS) assert.deepEqual(off.sheets.get(tab).data, plain.f.sheets.get(tab).data);
+  // The groups match; only the Friend requests column says the requests are turned off.
+  const withoutFriends = data => data.map(r => r.slice(0, 9));
+  for (const tab of GRADE_TABS) assert.deepEqual(withoutFriends(off.sheets.get(tab).data), withoutFriends(plain.f.sheets.get(tab).data));
+  assert.equal(off.sheets.get('PP Senior').data.find(r => r[0] === 'practice1@example.org')[9], 'With Practice Student 002: not used (friend requests are turned off in Settings).');
   assert.ok(off.sheets.get('PP Friend check').data.slice(1).every(r => r[3] === 'Not applied' && r[4] === 'Friend requests are turned off in Settings'));
 });
 test('Check again reports a "Not with" pair put together by hand and rebuilds PP Friend check', () => {
@@ -931,4 +928,308 @@ test('a project tab name turns a slash into " - " and never has two spaces in a 
   f.sheets.get('PP Project tabs').data.push(['old', 'Old project', 'PP Group 02 Old project', 'Major']);
   f.adapter.sort('A project stopped running');
   assert.deepEqual(groups(), ['PP Group 01 A - B']);
+});
+
+// The widths Mr. Litowitz asked for, by header, written out here on their own.
+const WIDTH_TABLE = { '#': 45, 'Grade': 70, 'Fit #1': 70, 'Fit #2': 70, 'Status': 90, 'Severity': 90, 'Preference': 90, 'Use': 90,
+  'Week 1': 85, 'Week 2': 85, 'Male': 85, 'Female': 85, 'Seniors': 85, 'Juniors': 85, 'Sophomores': 85, 'Picked it': 85, 'Location': 130,
+  'Faculty': 160, 'Project Faculty': 160, 'Celebration of Learning': 190, 'Name': 210, 'Student': 210, 'Classmate': 210,
+  'Student ID': 230, 'Email': 230, 'Classmate email': 230, 'Code': 230, 'Project': 270, 'Project #1': 270, 'Project #2': 270, 'Project 1': 270, 'Project 2': 270,
+  'Metric': 420, 'Value': 220, 'Why': 560, 'Reason': 560, 'Message': 560, 'Student comment': 560, 'Comment': 560, 'Issues': 560, 'Flags': 420, 'Review flags': 420, 'Friend requests': 420 };
+const ppTabs = f => [...f.sheets.values()].filter(s => s.name.startsWith('PP '));
+const layoutTab = name => name === 'PP Master list' || name === 'PP Start here' || /^PP Group \d{2} /.test(name);
+test('PP tabs get column widths from their headers and never auto-resize; the layout tabs use the widths their writers pass', () => {
+  const { f, run } = practiceRun('Widths');
+  const check = () => {
+    for (const s of ppTabs(f)) {
+      assert.equal(s.autoResized, 0, s.name);
+      if (layoutTab(s.name)) continue;
+      s.data[0].forEach((header, i) => assert.equal(s.getColumnWidth(i + 1), (s.name === 'PP Projects' && (header === 'Project' || header === 'Flags')) ? 300 : WIDTH_TABLE[header] ?? 140, s.name + ': ' + header));
+    }
+    const widths = (name, n) => Array.from({ length: n }, (_, i) => f.sheets.get(name).getColumnWidth(i + 1));
+    assert.deepEqual(widths('PP Master list', 6), [220, 270, 150, 270, 150, 560]);
+    const group = [...f.sheets.keys()].find(n => /^PP Group 01 /.test(n));
+    assert.deepEqual(widths(group, 4), [220, 70, 190, 620]);
+    assert.equal(f.sheets.get('PP Needs you').getColumnWidth(f.sheets.get('PP Needs you').data[0].indexOf('Reason') + 1), 560);
+  };
+  check();
+  // A run of equal widths is one call: PP Projects takes six.
+  assert.equal(f.sheets.get('PP Projects').widthCalls, 6);
+  // Setup and Make practice data still size the tabs they create to their text.
+  assert.ok(f.sheets.get('Settings').autoResized > 0);
+  moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+});
+
+test('every written cell is aligned to the top, long-text columns wrap, number columns are centered, and the right rows and columns are frozen', () => {
+  const { f, run } = practiceRun('Text and alignment');
+  const check = () => {
+    for (const s of ppTabs(f)) {
+      const width = Math.max(...s.data.map(r => r.length)), layout = layoutTab(s.name);
+      // Every written cell, header included, is aligned to the top.
+      for (let r = 1; r <= s.data.length; r++) for (let c = 1; c <= width; c++) assert.equal(s.formatOf('valign', r, c), 'top', s.name + ' ' + r + ',' + c);
+      assert.deepEqual([s.getFrozenRows(), s.getFrozenColumns()], [layout ? 0 : 1, ['PP Needs you', 'PP Projects', 'PP Senior', 'PP Junior', 'PP Sophomore'].includes(s.name) ? 2 : 0], s.name);
+      for (let c = 1; c <= width; c++) {
+        const header = layout ? null : s.data[0][c - 1], last = s.data.length;
+        assert.equal(s.formatOf('wrap', last, c) === true, s.getColumnWidth(c) >= 420, s.name + ' wrap ' + c);
+        if (header !== null) assert.equal(s.formatOf('halign', last, c) === 'center', ['#', 'Grade', 'Fit #1', 'Fit #2', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Checked', 'Checked + Type or goal'].includes(header), s.name + ' center ' + header);
+      }
+      // The maroon header row, as before.
+      if (!layout) for (let c = 1; c <= width; c++) { assert.ok(s.isBold(1, c)); assert.equal(s.colors.get('1,' + c), '#9e2132'); assert.equal(s.formatOf('fontColor', 1, c), '#ffffff'); }
+    }
+    // On a project tab only Grade is centered.
+    const group = f.sheets.get([...f.sheets.keys()].find(n => /^PP Group 01 /.test(n)));
+    assert.deepEqual([1, 2, 3, 4].map(c => group.formatOf('halign', 5, c) || ''), ['', 'center', '', '']);
+  };
+  check();
+  // A fill left on a row from an earlier run is gone after the next write.
+  f.sheets.get('PP Needs you').getRange(3, 1, 1, 6).setBackground('#00ff00');
+  f.adapter.sort('Rerun');
+  assert.equal(f.sheets.get('PP Needs you').colors.get('3,1'), undefined);
+  moveToMajor(f, run, placedRows(f, saved(f)).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+});
+
+test('the grade tabs keep their dropdowns after Sort and after Check again', () => {
+  const { f, run } = practiceRun('Dropdowns'), labels = run.projects.map(label).sort();
+  const check = () => {
+    for (const tab of GRADE_TABS) {
+      const sheet = f.sheets.get(tab), rows = sheet.data.length - 1, rules = sheet.getRange(2, 3, rows, 2).getDataValidations().flat();
+      assert.equal(rules.filter(Boolean).length, rows * 2, tab);
+      for (const rule of rules) assert.deepEqual(rule.values, labels);
+    }
+  };
+  check();
+  moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+  f.adapter.sort('Sort again'); check();
+});
+
+test('layout tabs: shaded grade titles on PP Master list; a large label, gray Faculty and Location, shaded GROUP and TOTAL rows on the project tabs, each style in one call', () => {
+  const { f, run } = practiceRun('Layout styles');
+  const cells = (s, row, n) => Array.from({ length: n }, (_, i) => i + 1);
+  const list = f.sheets.get('PP Master list');
+  for (const [i, row] of list.data.entries()) {
+    const title = /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(row[0]);
+    for (const c of cells(list, i + 1, 6)) {
+      assert.equal(list.colors.get((i + 1) + ',' + c) === '#F4E4E6', title, 'fill ' + (i + 1));
+      if (title) { assert.ok(list.isBold(i + 1, c)); assert.equal(list.formatOf('fontSize', i + 1, c), 12); }
+    }
+  }
+  const registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const minor = f.sheets.get(registry.get(run.projects.find(p => p.finalLength === 'Minor').id));
+  const style = (s, row) => ({ bold: s.isBold(row), size: s.formatOf('fontSize', row) || null, fill: s.colors.get(row + ',1') || null, color: s.formatOf('fontColor', row) || null });
+  assert.deepEqual(style(minor, 1), { bold: true, size: 14, fill: null, color: null });
+  assert.deepEqual([style(minor, 2), style(minor, 3)], [{ bold: false, size: null, fill: null, color: '#666666' }, { bold: false, size: null, fill: null, color: '#666666' }]);
+  for (const [i, row] of minor.data.entries()) {
+    const kind = /^GROUP \d \(week \d\)$/.test(row[0]) ? 'group' : /TOTAL - \d+ Students?$/.test(row[0]) ? 'total' : null;
+    if (!kind) continue;
+    for (let c = 1; c <= 4; c++) { assert.ok(minor.isBold(i + 1, c)); assert.equal(minor.colors.get((i + 1) + ',' + c), kind === 'group' ? '#F4E4E6' : '#EEEEEE'); }
+  }
+  assert.equal(minor.data.filter(r => /^GROUP \d \(week \d\)$/.test(r[0])).length, 2);
+  // Five styles on a Minor's tab (title, gray, GROUP, header, TOTAL): five calls, one per style.
+  assert.equal(minor.rangeLists, 5);
+});
+
+test('PP Projects has light gray borders on every cell, and a flagged row is shaded from Project to Flags with maroon flags; a rerun with fewer flags leaves no old fill', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare();
+  // Every third student Female gives several groups fewer than 3 of one gender.
+  f.sheets.get('PP Students').data.slice(1).forEach((r, i) => f.sheets.get('Gender').data.push([r[2], i % 3 ? 'Male' : 'Female']));
+  f.adapter.sort('Flags');
+  const tab = () => f.sheets.get('PP Projects');
+  const check = () => {
+    const s = tab(), flagged = [];
+    s.data.forEach((row, i) => {
+      for (let c = 1; c <= 13; c++) assert.equal(s.formatOf('border', i + 1, c), '#D9D9D9');
+      if (!i) return;
+      if (row[12]) flagged.push(i + 1);
+      for (let c = 1; c <= 13; c++) assert.equal(s.colors.get((i + 1) + ',' + c) || null, row[12] && c >= 2 ? '#FCE8E6' : null, 'row ' + (i + 1) + ' column ' + c);
+      assert.equal(s.formatOf('fontColor', i + 1, 13) || null, row[12] ? '#9E2132' : null);
+    });
+    return flagged.length;
+  };
+  const before = check();
+  assert.ok(before > 0);
+  // Without gender data the gender flags go, and so do their fills.
+  f.sheets.get('Gender').data.splice(1);
+  f.adapter.sort('Fewer flags');
+  assert.ok(check() < before);
+});
+
+test('in the pasted bundle, reasons name UN goals from the parser\'s list and never show a goal number', () => {
+  const { loadBundle } = require('./helpers/fake-spreadsheet.cjs'), b = loadBundle();
+  b.adapter.practice(); const result = b.adapter.sort('Goal names');
+  const reasons = Array.from(result.assignments, a => a.reason);
+  assert.ok(reasons.some(r => /UN goal match \((No Poverty|Zero Hunger|Good Health and Well-Being|Quality Education|Gender Equality|Industry, Innovation and Infrastructure|Reduced Inequalities)/.test(r)));
+  assert.ok(!reasons.some(r => /UN goal match \([^)]*\d/.test(r)));
+  assert.ok(!reasons.some(r => /type match \([a-z]/.test(r)));
+});
+
+const TIME = '(January|February|March|April|May|June|July|August|September|October|November|December) \\d{1,2}, \\d{4} at \\d{1,2}:\\d\\d (AM|PM)';
+test('PP Start here shows the last Sort from PP Run log, adds a Check again line after Check again, and explains the tabs in plain English', () => {
+  const { f, run } = practiceRun('Start here practice');
+  const start = () => f.sheets.get('PP Start here'), lines = () => start().data.map(r => r[0]);
+  const log = f.sheets.get('PP Run log').data, newest = log[log.length - 1], header = log[0];
+  assert.equal(lines()[0], 'Project: Pomfret 2026-27: proposed groups');
+  assert.ok(start().isBold(1)); assert.equal(start().formatOf('fontSize', 1), 14);
+  assert.match(lines()[1], new RegExp('^Last sorted: ' + TIME + ' by teacher@example\\.org\\. Reason: Start here practice\\.$'));
+  assert.equal(newest[header.indexOf('Why')], 'Start here practice'); assert.equal(newest[header.indexOf('Run by')], 'teacher@example.org');
+  assert.ok(!lines().some(l => /^Checked again/.test(l)));
+  for (const expected of ["What's here", "PP Master list: every student's Project #1 and #2, with the reason.", 'PP Projects: one row per project, with sizes, boys and girls, grades, how many picked it, and flags.',
+    'PP Group tabs: one roster per project.', 'PP Needs you: students to look at.', 'PP Summary: the numbers.',
+    "In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it.",
+    'To move a student', 'Check again rebuilds every tab and keeps the move.', 'A student moved by hand stays where they were put if Sort is run again.',
+    "The Friend requests column on those tabs shows each student's requests and whether they're met.",
+    "Don't edit PP Master list, PP Projects or the PP Group tabs directly. They're rebuilt each time."]) assert.ok(lines().includes(expected), expected);
+  assert.ok(lines().some(l => /^PP Not placed: students on trips, freshman leaders/.test(l)));
+  assert.ok(lines().some(l => /^Change their Project #1 and Project #2 on the PP Senior, PP Junior or PP Sophomore tab, then choose Check again from the Project: Pomfret menu\.$/.test(l)));
+  assert.ok(!start().data.flat().some(v => /—/.test(String(v))));
+  assert.equal(start().getColumnWidth(1), 700); assert.equal(start().formatOf('wrap', 2), true);
+  // A second Sort replaces the line; Check again keeps it and adds its own.
+  f.adapter.sort('Second sort');
+  moveToMajor(f, saved(f), placedRows(f, saved(f)).find(x => x.a.project2)); f.adapter.checkAgain();
+  assert.match(lines()[1], new RegExp('^Last sorted: ' + TIME + ' by teacher@example\\.org\\. Reason: Second sort\\.$'));
+  assert.match(lines()[2], new RegExp('^Checked again: ' + TIME + ' by teacher@example\\.org\\.$'));
+  assert.equal(lines().filter(l => /^Checked again/.test(l)).length, 1);
+});
+
+// The order Part 7 asks for, worked out from the tabs there were before.
+function expectedOrder(before) {
+  const first = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary'].filter(n => before.includes(n));
+  const front = [...first, ...before.filter(n => /^PP Group \d{2} /.test(n)).sort(), ...['PP Senior', 'PP Junior', 'PP Sophomore'].filter(n => before.includes(n))];
+  return [...front, ...before.filter(n => n.startsWith('PP ') && !front.includes(n)), ...before.filter(n => !n.startsWith('PP '))];
+}
+test('after Sort and Check again the tabs are in order and colored, other tabs are never deleted or renamed, and the right tab shows', () => {
+  const f = fixture(true); f.adapter.practice();
+  // A tab of Mr. Litowitz's own, with its own color, between the source tabs.
+  const own = new Sheet('Notes for the faculty', [['Note'], ['Keep this']]); own.setTabColor('#00ff00');
+  const entries = [...f.sheets.entries()]; entries.splice(2, 0, [own.name, own]); f.sheets.clear(); entries.forEach(([k, v]) => f.sheets.set(k, v));
+  const others = () => [...f.sheets.values()].filter(s => !s.name.startsWith('PP '));
+  const othersBefore = others().map(s => [s.name, s]);
+  f.adapter.sort('Tab order');
+  const order = () => [...f.sheets.keys()];
+  assert.deepEqual(order(), expectedOrder(order()));
+  assert.deepEqual(order().slice(0, 6), ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary']);
+  const groups = order().filter(n => /^PP Group \d{2} /.test(n));
+  assert.equal(groups.length, 23); assert.deepEqual(order().slice(6, 29), groups.slice().sort());
+  assert.deepEqual(order().slice(29, 32), ['PP Senior', 'PP Junior', 'PP Sophomore']);
+  assert.ok(order().slice(32).every((n, i, all) => !all.slice(0, i).some(m => !m.startsWith('PP ')) || !n.startsWith('PP ')));
+  // Every other tab is still there, under its name, in the same order, with its own color.
+  assert.deepEqual(others().map(s => [s.name, s]), othersBefore);
+  assert.equal(own.getTabColor(), '#00ff00'); assert.deepEqual(own.data, [['Note'], ['Keep this']]);
+  // Colors.
+  for (const s of f.sheets.values()) {
+    if (!s.name.startsWith('PP ')) continue;
+    const maroon = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed'].includes(s.name) || /^PP Group \d{2} /.test(s.name);
+    assert.equal(s.getTabColor(), maroon ? '#9E2132' : '#999999', s.name);
+  }
+  // After Sort, PP Start here shows.
+  assert.equal(f.spreadsheet.getActiveSheet().name, 'PP Start here');
+  // A rerun with the tabs already in order moves nothing.
+  const moves = f.spreadsheet.moves; f.adapter.sort('Same order'); assert.equal(f.spreadsheet.moves, moves);
+  // Check again: the order holds, and the tab that was showing shows again.
+  const run = saved(f); moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2));
+  f.spreadsheet.setActiveSheet(f.sheets.get('PP Junior'));
+  f.adapter.checkAgain();
+  assert.deepEqual(order(), expectedOrder(order()));
+  assert.equal(f.spreadsheet.getActiveSheet().name, 'PP Junior');
+  f.spreadsheet.setActiveSheet(own); f.adapter.checkAgain();
+  assert.equal(f.spreadsheet.getActiveSheet().name, 'Notes for the faculty');
+  assert.deepEqual(others().map(s => [s.name, s]), othersBefore);
+});
+
+test('after every menu step (Prepare students, Count interest, Sort, Check again), every PP tab has its widths, top alignment and frozen header and none auto-resized', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare(); f.adapter.interest(); f.adapter.sort('Every menu step');
+  const run = saved(f); moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  const names = ppTabs(f).map(s => s.name);
+  for (const name of ['PP Students', 'PP Input check', 'PP Interest', 'PP Project check', 'PP Check', 'PP Run log', 'PP Run snapshot', 'PP Seniors to check', 'PP Friend check', 'PP Project tabs']) assert.ok(names.includes(name), name);
+  for (const s of ppTabs(f)) {
+    assert.equal(s.autoResized, 0, s.name);
+    const width = Math.max(...s.data.map(r => r.length));
+    for (let c = 1; c <= width; c++) { assert.ok(s.widths.has(c), s.name + ' width ' + c); assert.equal(s.formatOf('valign', 1, c), 'top', s.name); }
+    if (!layoutTab(s.name)) assert.equal(s.getFrozenRows(), 1, s.name);
+  }
+});
+
+test('the test spreadsheet records formats the way Sheets keeps them', () => {
+  const { spreadsheetFor } = require('./helpers/fake-spreadsheet.cjs'), sheets = new Map(), book = spreadsheetFor(sheets);
+  const a = book.insertSheet('A'), b = book.insertSheet('B'), c = book.insertSheet('C');
+  assert.equal(book.getActiveSheet(), c);
+  a.getRangeList(['B2:D2', 'A5']).setBackground('#123456').setFontSize(12);
+  assert.deepEqual([a.colors.get('2,2'), a.colors.get('2,4'), a.colors.get('2,5'), a.colors.get('5,1'), a.formatOf('fontSize', 2, 3)], ['#123456', '#123456', undefined, '#123456', 12]);
+  a.setColumnWidths(1, 3, 90); a.setFrozenRows(1); a.setFrozenColumns(2); a.setTabColor('#999999');
+  a.getRange(1, 1).setDataValidation({ values: ['x'] }); a.clearFormats();
+  // Formats and data validation go; widths, frozen rows and columns and the tab color stay.
+  assert.deepEqual([a.colors.size, a.formats.size, a.validations.size, a.getColumnWidth(2), a.getFrozenRows(), a.getFrozenColumns(), a.getTabColor()], [0, 0, 0, 90, 1, 2, '#999999']);
+  book.setActiveSheet(c); book.moveActiveSheet(1);
+  assert.deepEqual([...sheets.keys()], ['C', 'A', 'B']); assert.equal(book.moves, 1);
+  book.setActiveSheet(c); book.moveActiveSheet(3);
+  assert.deepEqual([...sheets.keys()], ['A', 'B', 'C']);
+  book.deleteSheet(b); assert.deepEqual([...sheets.keys()], ['A', 'C']);
+});
+
+test('the Friend requests column shows each student\'s own requests on the grade tabs and PP Needs you, matched by ID, and Check again keeps it current', () => {
+  const f = fixture(true); f.adapter.practice();
+  const plain = f.adapter.sort('Find friends'), first = saved(f), students = [...first.students.values()], at = id => first.assignments.get(id);
+  const majors = students.filter(s => at(s.id).status === 'placed' && !at(s.id).project2), minors = students.filter(s => at(s.id).project2);
+  const a = majors[0], b = majors.find(s => s !== a && at(s.id).project1 === at(a.id).project1), c = minors[0];
+  const d = majors.find(s => ![a, b].includes(s)), e = majors.find(s => ![a, b, d].includes(s) && at(s.id).project1 !== at(d.id).project1);
+  const g = students.find(s => ![a, b, c, d, e].includes(s)), fit6 = students.find(s => at(s.id).flags.includes('Fit 6: review the placement.') && ![a, b, c, d, e, g].includes(s));
+  const row = (from, to, request, use = true, typed = '') => [typed || from.name, '', request, to.name, '', false, '', '', use, '', from.id, to.id];
+  // The row for a and c has someone else's name typed in, so only the ID can match it.
+  f.sheets.get('Friend requests').data.push(row(a, b, 'With'), row(b, a, 'With'), row(a, c, 'With', true, g.name), row(d, e, 'Not with'), row(fit6, g, 'With', false));
+  f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+  f.adapter.sort('Friend requests column');
+  const cell = s => { const tab = f.sheets.get(['', '', '', '', '', '', '', '', '', '', 'PP Sophomore', 'PP Junior', 'PP Senior'][s.grade]); return tab.data.find(r => r[0] === s.id)[tab.data[0].indexOf('Friend requests')]; };
+  const report = f.sheets.get('PP Friend check').data, whyFor = (from, to) => report.find(r => r[0] === (from === a && to === c ? g.name : from.name) && r[1] === to.name)[4];
+  const lower = v => v.charAt(0).toLowerCase() + v.slice(1);
+  assert.match(whyFor(a, c), /^One (is in a Major and the other is in Minors|asked for a Major and the other for Minors)$/);
+  assert.equal(cell(a), 'With ' + b.name + ': together. With ' + c.name + ': not together (' + lower(whyFor(a, c)) + ').');
+  assert.equal(cell(b), 'With ' + a.name + ': together.');
+  assert.equal(cell(c), '');
+  assert.equal(cell(d), 'Not with ' + e.name + ': kept apart.');
+  assert.equal(cell(e), '');
+  assert.equal(cell(fit6), 'With ' + g.name + ': not used (Use is not checked).');
+  assert.equal(cell(g), '');
+  // PP Needs you shows the same text for the students it lists.
+  const needs = f.sheets.get('PP Needs you').data;
+  assert.equal(needs[0][6], 'Friend requests');
+  assert.equal(needs.find(r => r[0] === fit6.id)[6], cell(fit6));
+  for (const r of needs.slice(1)) assert.equal(r[6], cell(first.students.get(r[0])));
+  // Never on the printed or shared tabs.
+  const shared = [...f.sheets.values()].filter(s => /^PP (Master list|Projects|Start here|Group \d{2} .+)$/.test(s.name));
+  assert.ok(shared.length > 20);
+  for (const s of shared) assert.ok(!s.data.flat().some(v => /Friend requests$|: together\.|: kept apart\.|not used \(/.test(String(v))), s.name);
+  // A move by hand that splits a and b changes both students' column after Check again.
+  const run = saved(f), pick = placedRows(f, run).find(x => x.row[0] === a.id);
+  pick.row[2] = pick.row[3] = label(run.projects.find(p => p.finalLength === 'Major' && p.id !== pick.a.project1));
+  f.adapter.checkAgain();
+  // a and c are still on different tracks, so that reason stays.
+  assert.equal(cell(a), 'With ' + b.name + ': not together (not in the same group). With ' + c.name + ': not together (' + lower(whyFor(a, c)) + ').');
+  assert.equal(cell(b), 'With ' + a.name + ': not together (not in the same group).');
+  // Editing the column by hand isn't a change to the row, and Check again writes it back.
+  const tabOf = s => f.sheets.get(['', '', '', '', '', '', '', '', '', '', 'PP Sophomore', 'PP Junior', 'PP Senior'][s.grade]);
+  tabOf(d).data.find(r => r[0] === d.id)[9] = 'Typed over';
+  const checks = [...f.adapter.checkAgain()];
+  assert.ok(!checks.some(x => x.code === 'manual_edit' && x.studentId === d.id));
+  assert.equal(cell(d), 'Not with ' + e.name + ': kept apart.');
+});
+
+test('Check again works on a grade tab from before the Friend requests column and adds it after Review flags', () => {
+  const f = fixture(true); f.adapter.practice();
+  const students = f.sheets.get('Senior').data;
+  f.sheets.get('Friend requests').data.push(['', '', 'With', '', '', false, '', '', true, '', students[1][1], students[2][1]]);
+  f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+  f.adapter.sort('Before the column');
+  // A grade tab written before this round has no Friend requests column.
+  for (const tab of GRADE_TABS) f.sheets.get(tab).data.forEach(r => r.splice(9));
+  const checks = [...f.adapter.checkAgain()];
+  assert.ok(!checks.some(x => x.code === 'manual_edit'));
+  for (const tab of GRADE_TABS) {
+    const s = f.sheets.get(tab);
+    assert.deepEqual(s.data[0].slice(8), ['Review flags', 'Friend requests'], tab);
+    assert.ok(s.isBold(1, 10)); assert.equal(s.getColumnWidth(10), 420); assert.equal(s.formatOf('wrap', 2, 10), true);
+  }
+  const senior = f.sheets.get('PP Senior').data.find(r => r[0] === students[1][1]);
+  assert.match(senior[9], /^With .+: (together|not together \(.+\))\.$/);
 });

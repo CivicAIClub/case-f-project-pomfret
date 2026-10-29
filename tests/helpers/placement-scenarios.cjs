@@ -39,9 +39,17 @@ const name = '(?:' + catalog.map(p => p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 const names = name + '(?:(?:, | and )' + name + ')*';
 const added = new RegExp(' (?:None of their picks are running: ' + names + '\\.|' + names + ' (?:was their project|were their projects) last year\\.|Their other picks were full\\.|Their other picks run as (?:Majors|Minors)\\.|Their other pick is their week [12] project\\.|They checked no projects\\.)', 'g');
 function withoutWhy(reason) { return String(reason || '').replace(added, ''); }
+// Round 4 names each UN goal and capitalizes types, so this turns them back into round 2's wording:
+// goal names into their numbers, longest name first, and types into lowercase.
+const goalNumbers = require('../../core/parser.js').goals.map((goal, i) => [goal, String(i + 1)]).sort((a, b) => b[0].length - a[0].length);
+function withNumbers(reason) {
+  return String(reason || '')
+    .replace(/UN goal match \(([^)]*)\)/g, (_, list) => 'UN goal match (' + goalNumbers.reduce((text, [goal, n]) => text.split(goal).join(n), list) + ')')
+    .replace(/type match \(([^)]*)\)/g, (_, list) => 'type match (' + list.toLowerCase() + ')');
+}
 // Array.from, because the bundle's arrays come from another realm.
 function record(assignments) {
-  return Array.from(assignments, a =>[a.studentId, a.status, a.project1, a.project2, a.fit1, a.fit2, a.locked === true, (a.flags || []).join('; '), hash(withoutWhy(a.reason))]);
+  return Array.from(assignments, a =>[a.studentId, a.status, a.project1, a.project2, a.fit1, a.fit2, a.locked === true, (a.flags || []).join('; '), hash(withNumbers(withoutWhy(a.reason)))]);
 }
 function scenarios() { return { practice: record(practice().adapter.sort('Practice run').assignments), everyRule: record(everyRule()) }; }
-module.exports = { scenarios, withoutWhy };
+module.exports = { scenarios, withoutWhy, withNumbers };

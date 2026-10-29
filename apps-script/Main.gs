@@ -6,6 +6,7 @@ var PPAdapter = (function () {
   'use strict';
   var INPUTS = [{ name: 'Senior', grade: 12 }, { name: 'Junior', grade: 11 }, { name: 'Sophomore', grade: 10 }];
   // Grade and group tabs get shared, and comments can name other students, so comments stay in PP Students.
+  // Friend requests show only on the grade tabs and PP Needs you, never on the printed or faculty tabs.
   var MASTER_HEADERS = ['Student ID', 'Name', 'Project #1', 'Project #2', 'Status', 'Fit #1', 'Fit #2', 'Reason', 'Review flags'];
   var SETTING_NOTES = {
     minSize: 'Minimum students in each group or each Minor week.',
@@ -52,36 +53,89 @@ var PPAdapter = (function () {
     if (s.getMaxRows() < rows) s.insertRowsAfter(s.getMaxRows(), rows - s.getMaxRows());
     if (s.getMaxColumns() < cols) s.insertColumnsAfter(s.getMaxColumns(), cols - s.getMaxColumns());
   }
+  // Column widths in pixels by header, for every PP tab. A tab can set its own width for a header.
+  var WIDTHS = [
+    [['#'], 45], [['Grade', 'Fit #1', 'Fit #2'], 70], [['Status', 'Severity', 'Preference', 'Use'], 90],
+    [['Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it'], 85], [['Location'], 130],
+    [['Faculty', 'Project Faculty'], 160], [['Celebration of Learning'], 190], [['Name', 'Student', 'Classmate'], 210],
+    [['Student ID', 'Email', 'Classmate email', 'Code'], 230], [['Project', 'Project #1', 'Project #2', 'Project 1', 'Project 2'], 270],
+    [['Metric'], 420], [['Value'], 220], [['Why', 'Reason', 'Message', 'Student comment', 'Comment', 'Issues'], 560], [['Flags', 'Review flags', 'Friend requests'], 420]
+  ];
+  var TAB_WIDTHS = { 'PP Projects': { 'Project': 300, 'Flags': 300 } };
+  function widthOf(tab, header) {
+    var own = TAB_WIDTHS[tab] && TAB_WIDTHS[tab][header];
+    if (own) return own;
+    for (var i = 0; i < WIDTHS.length; i++) if (WIDTHS[i][0].indexOf(header) >= 0) return WIDTHS[i][1];
+    return 140;
+  }
+  // Calls fn(start, count, value) for each run of equal values, columns counted from 1.
+  function runs(list, fn) {
+    for (var i = 0; i < list.length;) { var j = i; while (j < list.length && list[j] === list[i]) j++; fn(i + 1, j - i, list[i]); i = j; }
+  }
+  // Columns this wide hold long text, so they wrap. The #, Grade, Fit and count columns are centered.
+  var LONG_TEXT = 420;
+  var CENTERED = ['#', 'Grade', 'Fit #1', 'Fit #2', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Checked', 'Checked + Type or goal'];
+  // Tabs that keep their first two columns (the student or project) in view while scrolling.
+  var FREEZE_TWO = ['PP Needs you', 'PP Projects', 'PP Senior', 'PP Junior', 'PP Sophomore'];
+  // One setColumnWidths call per run of columns with the same width, and one call per run for
+  // wrapping and centering. Every written cell is aligned to the top.
+  function formatColumns(s, rows, widths, centered) {
+    runs(widths, function (start, count, width) { s.setColumnWidths(start, count, width); });
+    s.getRange(1, 1, rows, widths.length).setVerticalAlignment('top');
+    runs(widths.map(function (w) { return w >= LONG_TEXT; }), function (start, count, wrap) { if (wrap) s.getRange(1, start, rows, count).setWrap(true); });
+    runs(centered, function (start, count, center) { if (center) s.getRange(1, start, rows, count).setHorizontalAlignment('center'); });
+  }
   function write(name, headers, rows) {
     var s = sheet(name) || ss().insertSheet(name);
     var data = [headers].concat(rows).map(function (r) {
       return headers.map(function (_, i) { return safeCell(r[i]); });
     });
     resize(s, data.length, headers.length);
-    s.clearContents();
+    // Old formatting goes first, so a row's fill doesn't stay behind when rows move between runs.
+    // The grade tabs' dropdowns are set after this returns.
+    s.clearContents(); s.clearFormats();
     s.getRange(1, 1, data.length, headers.length).setValues(data);
     s.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
     s.setFrozenRows(1);
-    if (data.length > 1) s.getRange(2, 1, data.length - 1, headers.length).setWrap(true);
-    s.autoResizeColumns(1, headers.length);
-    for (var c = 1; c <= headers.length; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    // PP tabs get widths from their headers. Other tabs, written only when Setup or Make practice
+    // data creates them, still size to their text.
+    if (/^PP /.test(name)) {
+      s.setFrozenColumns(FREEZE_TWO.indexOf(name) >= 0 ? 2 : 0);
+      formatColumns(s, data.length, headers.map(function (h) { return widthOf(name, h); }), headers.map(function (h) { return CENTERED.indexOf(h) >= 0; }));
+    } else {
+      s.getRange(1, 1, data.length, headers.length).setVerticalAlignment('top');
+      if (data.length > 1) s.getRange(2, 1, data.length - 1, headers.length).setWrap(true);
+      s.autoResizeColumns(1, headers.length);
+      for (var c = 1; c <= headers.length; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    }
     return s;
   }
+  // How each kind of line looks on a layout tab, applied to every line of that kind at once.
+  var LAYOUT_STYLES = {
+    header: function (r) { r.setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff'); },
+    title: function (r) { r.setFontWeight('bold').setFontSize(14); },
+    section: function (r) { r.setFontWeight('bold').setFontSize(12).setBackground('#F4E4E6'); },
+    group: function (r) { r.setFontWeight('bold').setBackground('#F4E4E6'); },
+    total: function (r) { r.setFontWeight('bold').setBackground('#EEEEEE'); },
+    heading: function (r) { r.setFontWeight('bold'); },
+    muted: function (r) { r.setFontColor('#666666'); }
+  };
+  function rowA1(row, width) { return 'A' + row + ':' + String.fromCharCode(64 + width) + row; }
   // A tab laid out for reading and printing, like last year's master list and rosters. Each line is
-  // { cells, style }: 'header' rows look like the other tabs' headers, and 'title' and 'total' rows
-  // are bold. Old formatting goes first, because rows move between runs.
-  function writeLayout(name, width, lines) {
-    var s = sheet(name) || ss().insertSheet(name);
+  // { cells, style }, with a style from LAYOUT_STYLES or none. Row 1 isn't a header, so widths gives
+  // each column's width and centered[i] says whether column i is centered. Old formatting goes
+  // first, because rows move between runs.
+  function writeLayout(name, widths, lines, centered) {
+    var s = sheet(name) || ss().insertSheet(name), width = widths.length;
     var data = lines.map(function (l) { var row = []; for (var i = 0; i < width; i++) row.push(safeCell((l.cells || [])[i])); return row; });
     resize(s, Math.max(1, data.length), width);
-    s.clearContents(); s.clearFormats(); s.setFrozenRows(0);
-    if (data.length) s.getRange(1, 1, data.length, width).setValues(data).setWrap(true);
-    lines.forEach(function (l, i) {
-      if (l.style === 'header') s.getRange(i + 1, 1, 1, width).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
-      else if (l.style) s.getRange(i + 1, 1, 1, width).setFontWeight('bold');
+    s.clearContents(); s.clearFormats(); s.setFrozenRows(0); s.setFrozenColumns(0);
+    if (data.length) s.getRange(1, 1, data.length, width).setValues(data);
+    Object.keys(LAYOUT_STYLES).forEach(function (style) {
+      var rows = []; lines.forEach(function (l, i) { if (l.style === style) rows.push(rowA1(i + 1, width)); });
+      if (rows.length) LAYOUT_STYLES[style](s.getRangeList(rows));
     });
-    s.autoResizeColumns(1, width);
-    for (var c = 1; c <= width; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    formatColumns(s, Math.max(1, data.length), widths, centered || widths.map(function () { return false; }));
     return s;
   }
   function seed(name, headers, rows) {
@@ -97,8 +151,15 @@ var PPAdapter = (function () {
     s.getRange(1, last + 1, 1, missing.length).setValues([missing]).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
   }
   function appendRecord(name, record) {
-    var header = values(name, true)[0].map(text);
-    sheet(name, true).appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
+    var header = values(name, true)[0].map(text), s = sheet(name, true);
+    s.appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
+    // A row added to a PP tab, such as PP Run log, is formatted like the rows write() puts there.
+    if (/^PP /.test(name)) {
+      var row = s.getLastRow();
+      s.getRange(row, 1, 1, header.length).setVerticalAlignment('top');
+      runs(header.map(function (h) { return widthOf(name, h) >= LONG_TEXT; }), function (start, count, wrap) { if (wrap) s.getRange(row, start, 1, count).setWrap(true); });
+      runs(header.map(function (h) { return CENTERED.indexOf(h) >= 0; }), function (start, count, center) { if (center) s.getRange(row, start, 1, count).setHorizontalAlignment('center'); });
+    }
   }
   // optional lists columns that may be missing; each one present is read like the others.
   function records(name, headers, required, optional) {
@@ -285,10 +346,41 @@ var PPAdapter = (function () {
     if (!labels.length) return null;
     return SpreadsheetApp.newDataValidation().requireValueInList(labels, true).setAllowInvalid(false).setHelpText('Pick a running MAJ- or MIN- project, or clear the cell.').build();
   }
+  // Each student's own friend requests and how they stand, from the report PP Friend check shows,
+  // matched by Student ID: "With Jane Doe: together. Not with Alex Kim: kept apart." Only the grade
+  // tabs and PP Needs you show it; a "Not with" request is private, so the printed and shared tabs
+  // never do.
+  function friendNotes(rows) {
+    var notes = {};
+    (rows || []).forEach(function (r) {
+      if (!r.studentId) return;
+      // "Use" is the column's name, so it keeps its capital.
+      var why = text(r.why).replace(/^(?!Use\b)./, function (c) { return c.toLowerCase(); }), plainKind = text(r.request).toLowerCase(), what;
+      var kind = plainKind === 'with' ? 'With' : plainKind === 'not with' ? 'Not with' : 'Request for';
+      if (r.result === 'Not applied') what = 'not used' + (why ? ' (' + why + ')' : '');
+      else if (kind === 'Not with') what = r.result === 'Together' ? 'together' + (why ? ' (' + why + ')' : '') : why || 'kept apart';
+      else what = r.result === 'Together' ? 'together' : 'not together' + (why ? ' (' + why + ')' : '');
+      var line = kind + ' ' + (text(r.classmate) || r.classmateId || 'a classmate') + ': ' + what + '.';
+      notes[r.studentId] = notes[r.studentId] ? notes[r.studentId] + ' ' + line : line;
+    });
+    return notes;
+  }
+  // Check again rewrites each grade tab's Friend requests column in one call, because a move by
+  // hand can change whether two friends are together. A grade tab from before the column gets it
+  // after Review flags.
+  function rewriteFriendColumns(notes) {
+    [12, 11, 10].forEach(function (grade) {
+      var name = masterName(grade), s = sheet(name, true), header = values(name, true)[0].map(text), added = header.indexOf('Friend requests') < 0;
+      if (added) { addColumns(name, ['Friend requests']); header = values(name, true)[0].map(text); }
+      var data = values(name, true), col = header.indexOf('Friend requests') + 1, id = header.indexOf('Student ID');
+      if (data.length > 1) s.getRange(2, col, data.length - 1, 1).setValues(data.slice(1).map(function (r) { return [notes[text(r[id])] || '']; }));
+      if (added) { s.setColumnWidth(col, widthOf(name, 'Friend requests')); s.getRange(1, col, data.length, 1).setWrap(true).setVerticalAlignment('top'); }
+    });
+  }
   // Like the master list, a Major shows its MAJ- label in both columns.
   function secondProject(a, projects) { return a.project2 || (lengthOf(a.project1, projects) === 'Major' ? a.project1 : null); }
   function writeGradeTabs(students, result) {
-    var assignmentsById = {}, dropdown = projectDropdown(result.projects);
+    var assignmentsById = {}, dropdown = projectDropdown(result.projects), notes = friendNotes(result.friends);
     result.assignments.forEach(function (a) { assignmentsById[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade) {
       var name = masterName(grade), old = sheet(name);
@@ -296,9 +388,10 @@ var PPAdapter = (function () {
       if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
       var rows = students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, decisionFlags(a).join('; ')];
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, decisionFlags(a).join('; '), notes[s.id] || ''];
       });
-      var tab = write(name, MASTER_HEADERS, rows);
+      // Friend requests comes after Review flags. Check again doesn't need it, so it isn't in MASTER_HEADERS.
+      var tab = write(name, MASTER_HEADERS.concat(['Friend requests']), rows);
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
   }
@@ -319,16 +412,16 @@ var PPAdapter = (function () {
     function total(n) { return n + (n === 1 ? ' Student' : ' Students'); }
     result.projects.forEach(function (p, index) {
       var name = groupTabName(index, p.name), minor = p.finalLength === 'Minor', where = info[p.id] || { faculty: '', location: '' };
-      var lines = [{ cells: [projectToken(p.id, result.projects)], style: 'title' }, { cells: [('Faculty: ' + where.faculty).trim()] }, { cells: [('Location: ' + where.location).trim()] }];
+      var lines = [{ cells: [projectToken(p.id, result.projects)], style: 'title' }, { cells: [('Faculty: ' + where.faculty).trim()], style: 'muted' }, { cells: [('Location: ' + where.location).trim()], style: 'muted' }];
       (minor ? [0, 1] : [0]).forEach(function (w) {
         var group = result.assignments.filter(function (a) { return a.status === 'placed' && studentsById[a.studentId] && (w ? a.project2 : a.project1) === p.id; });
         group.sort(function (a, b) { var x = studentsById[a.studentId], y = studentsById[b.studentId]; return y.grade - x.grade || byLastName(x, y); });
-        if (minor) { if (w) lines.push({ cells: [] }); lines.push({ cells: ['GROUP ' + (w + 1) + ' (week ' + (w + 1) + ')'], style: 'title' }); }
+        if (minor) { if (w) lines.push({ cells: [] }); lines.push({ cells: ['GROUP ' + (w + 1) + ' (week ' + (w + 1) + ')'], style: 'group' }); }
         lines.push({ cells: ['Student', 'Grade', 'Celebration of Learning', 'Why'], style: 'header' });
         group.forEach(function (a) { var s = studentsById[a.studentId]; lines.push({ cells: [s.name || s.id, s.grade, s.celebration || '', a.reason] }); });
         lines.push({ cells: [(minor ? 'GROUP ' + (w + 1) + ' TOTAL - ' : 'TOTAL - ') + total(group.length)], style: 'total' });
       });
-      writeLayout(name, 4, lines);
+      writeLayout(name, [220, 70, 190, 620], lines, [false, true, false, false]);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
     oldRegistry.concat(result.projects.map(function (p, index) { return oldGroupTabName(index, p.name); })).forEach(function (name) {
@@ -357,14 +450,14 @@ var PPAdapter = (function () {
     result.assignments.forEach(function (a) { byId[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade, i) {
       if (i) lines.push({ cells: [] });
-      lines.push({ cells: [GRADE_WORDS[grade].toUpperCase()], style: 'title' });
+      lines.push({ cells: [GRADE_WORDS[grade].toUpperCase()], style: 'section' });
       lines.push({ cells: ['Name', 'Project #1', 'Project Faculty', 'Project #2', 'Project Faculty', 'Why'], style: 'header' });
       students.filter(function (s) { return s.grade === grade && byId[s.id] && byId[s.id].status === 'placed'; }).sort(byLastName).forEach(function (s) {
         var a = byId[s.id], two = secondProject(a, result.projects);
         lines.push({ cells: [s.name || s.id, projectToken(a.project1, result.projects), faculty(a.project1), projectToken(two, result.projects), faculty(two), a.reason] });
       });
     });
-    writeLayout('PP Master list', 6, lines);
+    writeLayout('PP Master list', [220, 270, 150, 270, 150, 560], lines);
   }
   var SUMMARY_LABELS = [['total', 'Students'], ['eligible', 'Students who can be placed'], ['placed', 'Placed'], ['excluded', 'Excluded (trip or freshman leader)'], ['needsReview', 'Need review'], ['majorStudents', 'Major students'], ['minorStudents', 'Minor students'], ['projectCount', 'Projects running'], ['minorProjectCount', 'Minor projects running']];
   function summaryRows(summary) {
@@ -412,7 +505,16 @@ var PPAdapter = (function () {
       var where = info[p.id] || { faculty: '', location: '' };
       return [i + 1, projectToken(p.id, result.projects), where.location, where.faculty, weeks[0].size, minor ? weeks[1].size : weeks[0].size, both('male'), both('female'), both(12), both(11), both(10), both('picked'), flags.join('; ')];
     });
-    write('PP Projects', ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], rows);
+    var headers = ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], last = String.fromCharCode(64 + headers.length);
+    var s = write('PP Projects', headers, rows), flagged = [];
+    // Light gray borders around every cell. A row with flags is shaded from Project to Flags, with
+    // its flags in maroon.
+    s.getRange(1, 1, rows.length + 1, headers.length).setBorder(true, true, true, true, true, true, '#D9D9D9', null);
+    rows.forEach(function (r, i) { if (r[headers.length - 1]) flagged.push(i + 2); });
+    if (flagged.length) {
+      s.getRangeList(flagged.map(function (row) { return 'B' + row + ':' + last + row; })).setBackground('#FCE8E6');
+      s.getRangeList(flagged.map(function (row) { return last + row; })).setFontColor('#9E2132');
+    }
   }
   // Every student who isn't placed, by grade and last name, and why. A trip shows its destination
   // when the hand-typed row gave one.
@@ -440,7 +542,7 @@ var PPAdapter = (function () {
   }
   // Everything that follows from the placements. Check again rebuilds these from the grade tabs.
   function writeResults(students, result, status, config, decisions) {
-    var studentsById = {}, info = details();
+    var studentsById = {}, info = details(), notes = friendNotes(result.friends);
     students.forEach(function (s) { studentsById[s.id] = s; });
     writeMasterList(students, result, info);
     writeProjectsOverview(students, result, info, config, decisions);
@@ -448,10 +550,74 @@ var PPAdapter = (function () {
     writeGroupTabs(students, result, info);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     // Only students with something to decide: a flag or issue that needs a decision, or a review status.
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || decisionFlags(a, s).length); }).map(function (a) {
-      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, decisionFlags(a, s).join('; ')];
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags', 'Friend requests'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || decisionFlags(a, s).length); }).map(function (a) {
+      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, decisionFlags(a, s).join('; '), notes[s.id] || ''];
     }));
     writeSeniorsToCheck(students, result);
+  }
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  // A time as people write it, such as "October 28, 2026 at 3:15 PM", in the spreadsheet's time zone.
+  function when(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return text(d) || 'an unknown time';
+    try { return Utilities.formatDate(d, ss().getSpreadsheetTimeZone(), "MMMM d, yyyy 'at' h:mm a"); }
+    catch (e) { return MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() + ' at ' + (d.getHours() % 12 || 12) + ':' + String(d.getMinutes()).padStart(2, '0') + ' ' + (d.getHours() < 12 ? 'AM' : 'PM'); }
+  }
+  function sentence(v) { v = text(v); return v && !/[.!?]$/.test(v) ? v + '.' : v; }
+  // The newest row in PP Run log: when Sort ran, who ran it and the reason they typed.
+  function lastSort() {
+    var rows = records('PP Run log', ['Time', 'Why'], false, ['Run by']), r = rows[rows.length - 1];
+    return r ? { time: r.Time, by: text(r['Run by']) || 'unknown', reason: text(r.Why) } : null;
+  }
+  // The first tab to read: when the groups were made, what each tab is for, and how to move a student.
+  function writeStartHere(sorted, checked) {
+    var lines = [{ cells: ['Project: Pomfret 2026-27: proposed groups'], style: 'title' },
+      { cells: [sorted ? 'Last sorted: ' + when(sorted.time) + ' by ' + sorted.by + '. Reason: ' + sentence(sorted.reason) : 'Last sorted: PP Run log has no Sort yet.'] }];
+    if (checked) lines.push({ cells: ['Checked again: ' + when(checked.time) + ' by ' + checked.by + '.'] });
+    [[], ["What's here", 'heading'],
+      ["PP Master list: every student's Project #1 and #2, with the reason."],
+      ['PP Projects: one row per project, with sizes, boys and girls, grades, how many picked it, and flags.'],
+      ['PP Group tabs: one roster per project.'],
+      ['PP Needs you: students to look at.'],
+      ["PP Not placed: students on trips, freshman leaders and anyone else who isn't placed."],
+      ['PP Summary: the numbers.'],
+      [],
+      ["In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it."],
+      [],
+      ['To move a student', 'heading'],
+      ['Change their Project #1 and Project #2 on the PP Senior, PP Junior or PP Sophomore tab, then choose Check again from the Project: Pomfret menu.'],
+      ['Check again rebuilds every tab and keeps the move.'],
+      ['A student moved by hand stays where they were put if Sort is run again.'],
+      ["The Friend requests column on those tabs shows each student's requests and whether they're met."],
+      [],
+      ["Don't edit PP Master list, PP Projects or the PP Group tabs directly. They're rebuilt each time."]
+    ].forEach(function (l) { lines.push({ cells: l.length ? [l[0]] : [], style: l[1] }); });
+    writeLayout('PP Start here', [700], lines);
+  }
+  // Tab order after Sort and Check again: the tabs to read first, the project tabs in number order,
+  // the grade tabs, then the other PP tabs and every other tab, each in the order it was in. A
+  // move is its own call, so a tab already in place stays put. Tabs are only moved and colored,
+  // never renamed or deleted, and only PP tabs get a color.
+  var FIRST_TABS = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary'];
+  var MAROON_TABS = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed'];
+  function isGroupTab(name) { return /^PP Group \d{2} /.test(name); }
+  function activeTab() { try { var s = ss().getActiveSheet(); return s ? s.getName() : null; } catch (e) { return null; } }
+  function arrangeTabs(show) {
+    var book = ss(), names = book.getSheets().map(function (s) { return s.getName(); });
+    function has(n) { return names.indexOf(n) >= 0; }
+    var front = FIRST_TABS.filter(has).concat(names.filter(isGroupTab).sort(), ['PP Senior', 'PP Junior', 'PP Sophomore'].filter(has));
+    var order = front.concat(names.filter(function (n) { return /^PP /.test(n) && front.indexOf(n) < 0; }), names.filter(function (n) { return !/^PP /.test(n); }));
+    order.forEach(function (name, i) {
+      if (names[i] === name) return;
+      book.setActiveSheet(book.getSheetByName(name)); book.moveActiveSheet(i + 1);
+      names.splice(names.indexOf(name), 1); names.splice(i, 0, name);
+    });
+    book.getSheets().forEach(function (s) {
+      var name = s.getName(), color = MAROON_TABS.indexOf(name) >= 0 || isGroupTab(name) ? '#9E2132' : '#999999';
+      if (/^PP /.test(name) && text(s.getTabColor()).toUpperCase() !== color) s.setTabColor(color);
+    });
+    // Moving tabs changes the active one, so show the tab asked for, or PP Start here.
+    var target = (show && book.getSheetByName(show)) || book.getSheetByName('PP Start here');
+    if (target) book.setActiveSheet(target);
   }
   function output(input, result, config, decisions) {
     writeGradeTabs(input.students, result);
@@ -480,8 +646,12 @@ var PPAdapter = (function () {
     var result = PPEngine.sort(input.students, input.projects, config, decisions, context);
     snapshot(input, result, config, decisions);
     output(input, result, config, decisions);
-    var allChecks = result.checks.concat(input.issues || [], result.issues || []);
-    appendRecord('PP Run log', { 'Time': new Date(), 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': activeUser() });
+    // PP Start here shows the same time, person and reason as the PP Run log row.
+    var allChecks = result.checks.concat(input.issues || [], result.issues || []), time = new Date(), by = activeUser();
+    writeStartHere({ time: time, by: by, reason: reason }, null);
+    appendRecord('PP Run log', { 'Time': time, 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': by });
+    // After Sort, PP Start here is the tab showing.
+    arrangeTabs('PP Start here');
     result.savedMoves = moves;
     return result;
   }
@@ -609,6 +779,7 @@ var PPAdapter = (function () {
     return out.concat(info.issues);
   }
   function checkAgain() {
+    var shown = activeTab();
     setup();
     var moves = saveMoves(), state;
     // Moves are saved before anything can stop Check again.
@@ -687,9 +858,13 @@ var PPAdapter = (function () {
     // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
     var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current, state.settings, state.choices) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
     if (report) summary.friends = report.summary;
-    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.', state.settings, state.choices);
-    if (report) writeFriendCheck(report.rows);
+    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint, friends: report ? report.rows : [] }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.', state.settings, state.choices);
+    if (report) { writeFriendCheck(report.rows); rewriteFriendColumns(friendNotes(report.rows)); }
     writeIssues('PP Check', checks);
+    // Check again doesn't add to PP Run log, so the Sort line comes from its newest row.
+    writeStartHere(lastSort(), { time: new Date(), by: activeUser() });
+    // The tab that was showing before Check again shows again after it.
+    arrangeTabs(shown);
     checks.savedMoves = moves;
     return checks;
   }
