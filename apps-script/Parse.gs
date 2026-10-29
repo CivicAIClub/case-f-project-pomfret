@@ -2,13 +2,15 @@
 /* Case F: deterministic form preparation. Source sheets are never modified. */
 var PPParser = (function () {
   'use strict';
+  // The 17 UN Sustainable Development Goals, written the usual way. Goal n is GOALS[n - 1]. The engine
+  // uses this list to name goals in reasons; matching ignores the punctuation.
   var GOALS = [
     'No Poverty', 'Zero Hunger', 'Good Health and Well-Being', 'Quality Education',
     'Gender Equality', 'Clean Water and Sanitation', 'Affordable and Clean Energy',
-    'Decent Work and Economic Growth', 'Industry Innovation and Infrastructure',
+    'Decent Work and Economic Growth', 'Industry, Innovation and Infrastructure',
     'Reduced Inequalities', 'Sustainable Cities and Communities',
     'Responsible Consumption and Production', 'Climate Action', 'Life Below Water',
-    'Life on Land', 'Peace Justice and Strong Institutions', 'Partnerships for the Goals'
+    'Life on Land', 'Peace, Justice and Strong Institutions', 'Partnerships for the Goals'
   ];
   var EXTRA_ALIASES = {
     'stem-app-building': ['STEM', 'S.T.E.M.', 'App Building'],
@@ -421,6 +423,6 @@ var PPParser = (function () {
     });
     return {projects:projects,issues:issues};
   }
-  return {prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious,sameName:sameName,genderOf:genderOf};
+  return {goals:GOALS,prepare:prepare,parseProjects:parseProjects,normalize:normalize,canonicalGoals:canonicalGoals,canonicalTypes:canonicalTypes,matchingProjects:matchingProjects,parsePrevious:parsePrevious,sameName:sameName,genderOf:genderOf};
 }());
 if (typeof module !== 'undefined' && module.exports) module.exports = PPParser;

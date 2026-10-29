@@ -23,11 +23,17 @@ var PPEngine = (function () {
     return v;
   }
   function overlap(a,b) { return arr(a).filter(function(x) {return arr(b).indexOf(x)>=0;}); }
+  // Reasons name each UN goal from the parser's list (goal 9 is its 9th name) and capitalize types.
+  // The parser is a global in Sheets and the browser and a module in Node; without it a goal keeps
+  // its number.
+  var goalNames=null;
+  function goalName(n){if(!goalNames){var parser=typeof PPParser!=='undefined'?PPParser:typeof require==='function'?require('./parser.js'):null;goalNames=parser&&parser.goals||[];}return goalNames[Number(n)-1]||String(n);}
+  function capitalized(t){return String(t).charAt(0).toUpperCase()+String(t).slice(1);}
   function fit(student,project,input) {
     var cfg=settings(input), checked=arr(student.choices).indexOf(project.id)>=0;
     var types=overlap(student.types,project.types), goals=overlap(student.goals,project.goals), t=types.length>0,g=goals.length>0;
     var tier=checked && t && g ? 1 : checked && t ? 2 : checked && g ? 3 : checked ? (cfg.checkedBeforeInferred?4:5) : t && g ? (cfg.checkedBeforeInferred?5:4) : 6;
-    var pieces=[checked?'Checked this project':'Did not check this project',t?'type match ('+types.join(', ')+')':'no type match',g?'UN goal match ('+goals.join(', ')+')':'no UN goal match'];
+    var pieces=[checked?'Checked this project':'Did not check this project',t?'type match ('+types.map(capitalized).join(', ')+')':'no type match',g?'UN goal match ('+goals.map(goalName).join(', ')+')':'no UN goal match'];
     return {tier:tier,checked:checked,typeMatch:t,goalMatch:g,reason:pieces.join('; ')+'.'};
   }
   function interest(students,projects) {

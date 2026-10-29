@@ -1052,3 +1052,12 @@ test('PP Projects has light gray borders on every cell, and a flagged row is sha
   f.adapter.sort('Fewer flags');
   assert.ok(check() < before);
 });
+
+test('in the pasted bundle, reasons name UN goals from the parser\'s list and never show a goal number', () => {
+  const { loadBundle } = require('./helpers/fake-spreadsheet.cjs'), b = loadBundle();
+  b.adapter.practice(); const result = b.adapter.sort('Goal names');
+  const reasons = Array.from(result.assignments, a => a.reason);
+  assert.ok(reasons.some(r => /UN goal match \((No Poverty|Zero Hunger|Good Health and Well-Being|Quality Education|Gender Equality|Industry, Innovation and Infrastructure|Reduced Inequalities)/.test(r)));
+  assert.ok(!reasons.some(r => /UN goal match \([^)]*\d/.test(r)));
+  assert.ok(!reasons.some(r => /type match \([a-z]/.test(r)));
+});

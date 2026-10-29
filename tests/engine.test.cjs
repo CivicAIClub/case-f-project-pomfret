@@ -944,3 +944,15 @@ test('a lock or a move by hand into last year\'s project is information with a f
   checks=E.check(students,placed,[row({}),...others],cfg,{}).filter(c=>c.code==='PREVIOUS_PROJECT');
   assert.deepEqual(checks.map(c=>c.severity),['error']);
 });
+
+test('a reason names each UN goal and capitalizes types',()=>{
+  assert.equal(E.fit(s('1'),p('a')).reason,'Checked this project; type match (Hands); UN goal match (Good Health and Well-Being).');
+  const both=E.fit(s('1',{types:['head','hands'],goals:['9','16']}),p('a',undefined,{types:['hands','head'],goals:['16','9']}));
+  assert.equal(both.reason,'Checked this project; type match (Head, Hands); UN goal match (Industry, Innovation and Infrastructure, Peace, Justice and Strong Institutions).');
+  assert.equal(E.fit(s('1',{choices:[],types:['feet'],goals:['1']}),p('a')).reason,'Did not check this project; no type match; no UN goal match.');
+  // The names come from the parser's list, so there is one list.
+  assert.equal(require('../core/parser.js').goals[8],'Industry, Innovation and Infrastructure');
+  // A Minor student's reason names the goals for each week.
+  const r=E.sort([s('m',{preference:'Minor',choices:['m1','m2']})],[p('m1','Minor'),p('m2','Minor',{goals:['17']})],config({projectCount:2,minorProjects:2,minorMin:1,minorTarget:1,minorMax:1}),{});
+  assert.match(r.assignments[0].reason,/^Week 1: Checked this project; type match \(Hands\); (UN goal match \(Good Health and Well-Being\)|no UN goal match)\. Week 2: /);
+});
