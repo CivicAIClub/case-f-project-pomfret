@@ -689,6 +689,8 @@ var PPParser = (function () {
     var email = text(value).toLowerCase();
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
   }
+  // A Student ID or email as Friend requests matches it (the engine's key): lowercase, with no spaces.
+  function idKey(value) { return text(value).toLowerCase().replace(/\s+/g, ''); }
   /* Names arrive as "Last, First" or "First Last" with any spacing or capitals.
    * Without a comma the first word is the first name and the last name is one or
    * more of the final words, so "Jo Ann Smith" can match "Smith, Jo" or "Ann Smith, Jo". */
@@ -958,10 +960,15 @@ var PPParser = (function () {
         issues.push(issue('NO_RESPONSE', 'warning', 'No form from "' + row.name + '". Set to late, so they are placed after everyone else into the spots that are left.', row.source, row.id));
       }
     });
+    // Gender and Status changes find a student the way Friend requests does: by email, or by any
+    // Student ID on the grade tabs, ignoring case and spaces. That includes a shared email's ID, such
+    // as jo@example.org:smith-jo, and a hand-typed row's, such as row:junior:11:36.
+    var known = {};
+    kept.forEach(function (s) { known[idKey(s.id)] = true; if (s.email) known[idKey(s.email)] = true; });
+    function studentKey(value) { return emailOf(value) || (known[idKey(value)] ? idKey(value) : ''); }
     var genders = {};
     (options.genders || []).forEach(function (g) {
-      // The Email column also takes a Student ID such as jo@example.org:smith-jo, for students who share an email.
-      var email = emailOf(g.email), gender = genderOf(g.gender) || text(g.gender);
+      var email = studentKey(g.email), gender = genderOf(g.gender) || text(g.gender);
       if (!email) { issues.push(issue('INVALID_GENDER_ROW', 'warning', 'Gender row needs a valid email or Student ID.')); return; }
       // Never guess. A blank row is no gender on file; anything but Male or Female is kept as written.
       if (!gender) return;
@@ -970,7 +977,7 @@ var PPParser = (function () {
     });
     var statusChanges = options.statusChanges || [];
     statusChanges.forEach(function (change) {
-      var email = emailOf(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
+      var email = studentKey(change.email), name = normalize(change.name), status = normalize(change.status), why = text(change.why);
       if (STATUS.indexOf(status) < 0 || !why || (!email && !name)) { issues.push(issue('INVALID_STATUS_CHANGE', 'error', 'Status change requires a valid status, a reason, and an email or exact name.')); return; }
       var matches = kept.filter(function (s) { return (!email || s.email === email || s.id === email) && (!name || s._nameKey === name); });
       if (matches.length !== 1) { issues.push(issue('AMBIGUOUS_STATUS_CHANGE', 'error', 'Status change did not identify exactly one student.')); return; }

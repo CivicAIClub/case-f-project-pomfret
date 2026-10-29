@@ -847,6 +847,60 @@ test('a Gender row saying Nonbinary reaches the sheet as written: counted as nei
   for (const tab of ['PP Check', 'PP Input check']) assert.ok(!f.sheets.get(tab).data.some(r => /unknown/i.test(String(r[2]))), tab);
 });
 
+test('a hand-typed student\'s row: Student ID works in the Gender tab: Male in PP Projects and the gender checks, and not "no gender on file"; "not an id" is still a warning', () => {
+  const f = fixture(true); f.adapter.practice();
+  // An invented junior with no form, so their Student ID is a row: ID.
+  const junior = f.sheets.get('Junior');
+  junior.data.push(['', '', 'Okafor, Robin', '', '', '', '', '', '', '']);
+  const id = 'row:junior:11:' + junior.data.length;
+  // The only Gender rows: that student as M, and one whose Email cell is neither an email nor a Student ID.
+  f.sheets.get('Gender').data.push([id, 'M'], ['not an id', 'F']);
+  f.adapter.sort('Gender by row ID');
+  const run = saved(f), a = run.assignments.get(id), students = f.sheets.get('PP Students').data;
+  assert.equal(run.students.get(id).gender, 'Male'); assert.equal(students.find(r => r[0] === id)[10], 'Male');
+  assert.equal(a.status, 'placed');
+  const groups = (a.project2 ? [[a.project1, 1], [a.project2, 2]] : [[a.project1, 0]]).map(([pid, week]) => ({ p: run.projects.find(p => p.id === pid), week }));
+  const escape = s => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  function counted() {
+    // PP Projects: the one Male student, once for each group they're in, and no Female students.
+    const tab = f.sheets.get('PP Projects').data, header = tab[0], per = (r, h) => String(r[header.indexOf(h)]).split(' / ').map(Number);
+    const male = tab.slice(1).flatMap(r => per(r, 'Male').map((n, w, all) => ({ group: r[header.indexOf('Project')] + (all.length === 2 ? ', week ' + (w + 1) : ''), n }))).filter(x => x.n);
+    assert.deepEqual(male.map(x => x.group).sort(), groups.map(g => label(g.p) + (g.week ? ', week ' + g.week : '')).sort());
+    assert.ok(male.every(x => x.n === 1));
+    assert.ok(tab.slice(1).every(r => per(r, 'Female').every(n => n === 0)));
+    for (const g of groups) assert.match(tab.find(r => r[1] === label(g.p))[header.indexOf('Flags')], /Fewer than 3 of one gender/);
+    // PP Check: each of their groups has 1 Male and 0 Female students, and gender data was supplied.
+    const check = f.sheets.get('PP Check').data, balance = check.filter(r => r[1] === 'GENDER_BALANCE').map(r => r[2]);
+    assert.equal(balance.length, groups.length);
+    for (const g of groups) assert.ok(balance.some(m => new RegExp('^' + escape(g.p.name) + (g.week ? ', week ' + g.week : '') + ': 1 Male and 0 Female students \\(\\d+ with no gender on file\\)\\. Gender balancing is turned off in Settings\\.$').test(m)), g.p.name);
+    assert.ok(!check.some(r => r[1] === 'NO_GENDER_DATA'));
+  }
+  counted();
+  // PP Input check: only "not an id" is a bad Gender row, and the student isn't one with no gender on file.
+  const input = f.sheets.get('PP Input check').data, placeable = students.slice(1).filter(r => r[4] === 'eligible' || r[4] === 'late').length;
+  assert.deepEqual(input.filter(r => r[1] === 'INVALID_GENDER_ROW').map(r => [r[0], r[2]]), [['warning', 'Gender row needs a valid email or Student ID.']]);
+  assert.ok(input.some(r => r[1] === 'GENDER_NOT_COUNTED' && r[2] === 'Of the students who can be placed, ' + (placeable - 1) + ' have no gender on file and 0 are not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+  // Check again rebuilds PP Projects and PP Check from the saved run, with the same counts.
+  f.adapter.checkAgain();
+  counted();
+});
+
+test('Status changes and Locked placements take a hand-typed student\'s row: Student ID', () => {
+  const f = fixture(true); f.adapter.practice();
+  const junior = f.sheets.get('Junior');
+  junior.data.push(['', '', 'Okafor, Robin', '', '', '', '', '', '', ''], ['', '', 'Quill, Casey', '', '', '', '', '', '', '']);
+  const away = 'row:junior:11:' + (junior.data.length - 1), locked = 'row:junior:11:' + junior.data.length;
+  // Status changes was fixed in this round; Locked placements already matched any Student ID.
+  f.sheets.get('Status changes').data.push([away, '', 'trip', 'Away that week']);
+  f.sheets.get('Locked placements').data.push([locked, '', 'MAJ-Robotics', '', 'Practice', '', 'Invented lock']);
+  f.adapter.sort('Row IDs in Status changes and Locked placements');
+  const run = saved(f);
+  assert.equal(run.students.get(away).status, 'trip'); assert.equal(run.assignments.get(away).status, 'excluded');
+  assert.ok(run.students.get(away).issues.includes('Status changed: Away that week'));
+  assert.deepEqual([run.assignments.get(locked).project1, run.assignments.get(locked).locked], ['robotics', true]);
+  for (const tab of ['PP Input check', 'PP Check']) assert.ok(!f.sheets.get(tab).data.some(r => /STATUS_CHANGE|LOCK_UNKNOWN/.test(r[1])), tab);
+});
+
 test('every flag is either information or needs a decision, and anything not on the information list needs a decision', () => {
   const f = fixture(true), decide = flag => f.adapter.needsDecision(flag);
   const information = ['Historical project not on current list; no renamed-project equivalence was assumed.', 'Latest timestamped submission retained; 1 older submission(s) removed.',
