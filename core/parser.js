@@ -355,7 +355,7 @@ var PPParser = (function () {
     });
     // Gender and Status changes find a student the way Friend requests does: by email, or by any
     // Student ID on the grade tabs, ignoring case and spaces. That includes a shared email's ID, such
-    // as jo@example.org:smith-jo, and a hand-typed row's, such as row:junior:11:36.
+    // as jo@example.org:smith-jo, and a hand-typed row's, such as row:junior:11:3.
     var known = {};
     kept.forEach(function (s) { known[idKey(s.id)] = true; if (s.email) known[idKey(s.email)] = true; });
     function studentKey(value) { return emailOf(value) || (known[idKey(value)] ? idKey(value) : ''); }

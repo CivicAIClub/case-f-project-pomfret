@@ -962,7 +962,7 @@ var PPParser = (function () {
     });
     // Gender and Status changes find a student the way Friend requests does: by email, or by any
     // Student ID on the grade tabs, ignoring case and spaces. That includes a shared email's ID, such
-    // as jo@example.org:smith-jo, and a hand-typed row's, such as row:junior:11:36.
+    // as jo@example.org:smith-jo, and a hand-typed row's, such as row:junior:11:3.
     var known = {};
     kept.forEach(function (s) { known[idKey(s.id)] = true; if (s.email) known[idKey(s.email)] = true; });
     function studentKey(value) { return emailOf(value) || (known[idKey(value)] ? idKey(value) : ''); }
@@ -2370,7 +2370,7 @@ var PPAdapter = (function () {
       ['Fit 3: checked the project, and it matches their UN goal.'],
       ['Fit 4: ' + (config.checkedBeforeInferred ? checkedOnly : both)],
       ['Fit 5: ' + (config.checkedBeforeInferred ? both : checkedOnly)],
-      ["Fit 6: didn't check the project, and it doesn't match both."],
+      ["Fit 6: didn't check the project, and it matches only one of their type and UN goal, or neither."],
       ['Type is the Head, Hands, Heart or Feet answer on the form. ' + (config.checkedBeforeInferred ? 'Fit 1 to 4 means' : 'Fit 1 to 3 and Fit 5 mean') + ' the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.']];
   }
   // The first tab to read: when the groups were made, what each tab is for, what the Fit numbers

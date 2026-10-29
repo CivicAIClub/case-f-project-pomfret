@@ -578,7 +578,7 @@ var PPAdapter = (function () {
       ['Fit 3: checked the project, and it matches their UN goal.'],
       ['Fit 4: ' + (config.checkedBeforeInferred ? checkedOnly : both)],
       ['Fit 5: ' + (config.checkedBeforeInferred ? both : checkedOnly)],
-      ["Fit 6: didn't check the project, and it doesn't match both."],
+      ["Fit 6: didn't check the project, and it matches only one of their type and UN goal, or neither."],
       ['Type is the Head, Hands, Heart or Feet answer on the form. ' + (config.checkedBeforeInferred ? 'Fit 1 to 4 means' : 'Fit 1 to 3 and Fit 5 mean') + ' the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.']];
   }
   // The first tab to read: when the groups were made, what each tab is for, what the Fit numbers

@@ -1156,7 +1156,7 @@ const FIT_LINES = {
     'Fit 3: checked the project, and it matches their UN goal.',
     'Fit 4: checked the project, with no other match.',
     "Fit 5: didn't check the project, but it matches both their type and their UN goal.",
-    "Fit 6: didn't check the project, and it doesn't match both.",
+    "Fit 6: didn't check the project, and it matches only one of their type and UN goal, or neither.",
     'Type is the Head, Hands, Heart or Feet answer on the form. Fit 1 to 4 means the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.'],
   false: ['What the Fit numbers mean (1 is best)',
     'Fit 1: checked the project, and it matches their type and their UN goal.',
@@ -1164,7 +1164,7 @@ const FIT_LINES = {
     'Fit 3: checked the project, and it matches their UN goal.',
     "Fit 4: didn't check the project, but it matches both their type and their UN goal.",
     'Fit 5: checked the project, with no other match.',
-    "Fit 6: didn't check the project, and it doesn't match both.",
+    "Fit 6: didn't check the project, and it matches only one of their type and UN goal, or neither.",
     'Type is the Head, Hands, Heart or Feet answer on the form. Fit 1 to 3 and Fit 5 mean the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.']
 };
 const startLines = f => f.sheets.get('PP Start here').data.map(r => String(r[0] ?? ''));
@@ -1212,16 +1212,16 @@ test('with checkedBeforeInferred FALSE, Fit 4 and Fit 5 swap and the closing lin
 test('each Fit line describes the case PPEngine.fit gives that number for, with checkedBeforeInferred TRUE and FALSE', () => {
   // An invented student who checked a, b, c and d, with the Hands type and UN goal 3.
   const student = { id: 'fit.check@example.org', choices: ['a', 'b', 'c', 'd'], types: ['hands'], goals: ['3'] };
-  const both = "didn't check the project, but it matches both their type and their UN goal.", neither = "didn't check the project, and it doesn't match both.";
+  const both = "didn't check the project, but it matches both their type and their UN goal.", oneOrNeither = "didn't check the project, and it matches only one of their type and UN goal, or neither.";
   const cases = [
     [{ id: 'a', types: ['hands'], goals: ['3'] }, 'checked the project, and it matches their type and their UN goal.'],
     [{ id: 'b', types: ['hands'], goals: ['4'] }, 'checked the project, and it matches their type.'],
     [{ id: 'c', types: ['feet'], goals: ['3'] }, 'checked the project, and it matches their UN goal.'],
     [{ id: 'd', types: ['feet'], goals: ['4'] }, 'checked the project, with no other match.'],
     [{ id: 'e', types: ['hands'], goals: ['3'] }, both],
-    [{ id: 'f', types: ['hands'], goals: ['4'] }, neither],
-    [{ id: 'g', types: ['feet'], goals: ['3'] }, neither],
-    [{ id: 'h', types: ['feet'], goals: ['4'] }, neither]];
+    [{ id: 'f', types: ['hands'], goals: ['4'] }, oneOrNeither],
+    [{ id: 'g', types: ['feet'], goals: ['3'] }, oneOrNeither],
+    [{ id: 'h', types: ['feet'], goals: ['4'] }, oneOrNeither]];
   for (const checkedFirst of [true, false]) {
     const { f } = practiceRun('Fit lines', f => settingTo(f, 'checkedBeforeInferred', checkedFirst)), lines = startLines(f), seen = new Set();
     for (const [project, says] of cases) {
