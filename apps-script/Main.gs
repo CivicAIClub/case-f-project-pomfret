@@ -472,7 +472,16 @@ var PPAdapter = (function () {
       var where = info[p.id] || { faculty: '', location: '' };
       return [i + 1, projectToken(p.id, result.projects), where.location, where.faculty, weeks[0].size, minor ? weeks[1].size : weeks[0].size, both('male'), both('female'), both(12), both(11), both(10), both('picked'), flags.join('; ')];
     });
-    write('PP Projects', ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], rows);
+    var headers = ['#', 'Project', 'Location', 'Faculty', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Flags'], last = String.fromCharCode(64 + headers.length);
+    var s = write('PP Projects', headers, rows), flagged = [];
+    // Light gray borders around every cell. A row with flags is shaded from Project to Flags, with
+    // its flags in maroon.
+    s.getRange(1, 1, rows.length + 1, headers.length).setBorder(true, true, true, true, true, true, '#D9D9D9', null);
+    rows.forEach(function (r, i) { if (r[headers.length - 1]) flagged.push(i + 2); });
+    if (flagged.length) {
+      s.getRangeList(flagged.map(function (row) { return 'B' + row + ':' + last + row; })).setBackground('#FCE8E6');
+      s.getRangeList(flagged.map(function (row) { return last + row; })).setFontColor('#9E2132');
+    }
   }
   // Every student who isn't placed, by grade and last name, and why. A trip shows its destination
   // when the hand-typed row gave one.

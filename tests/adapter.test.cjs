@@ -1027,3 +1027,28 @@ test('layout tabs: shaded grade titles on PP Master list; a large label, gray Fa
   // Five styles on a Minor's tab (title, gray, GROUP, header, TOTAL): five calls, one per style.
   assert.equal(minor.rangeLists, 5);
 });
+
+test('PP Projects has light gray borders on every cell, and a flagged row is shaded from Project to Flags with maroon flags; a rerun with fewer flags leaves no old fill', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare();
+  // Every third student Female gives several groups fewer than 3 of one gender.
+  f.sheets.get('PP Students').data.slice(1).forEach((r, i) => f.sheets.get('Gender').data.push([r[2], i % 3 ? 'Male' : 'Female']));
+  f.adapter.sort('Flags');
+  const tab = () => f.sheets.get('PP Projects');
+  const check = () => {
+    const s = tab(), flagged = [];
+    s.data.forEach((row, i) => {
+      for (let c = 1; c <= 13; c++) assert.equal(s.formatOf('border', i + 1, c), '#D9D9D9');
+      if (!i) return;
+      if (row[12]) flagged.push(i + 1);
+      for (let c = 1; c <= 13; c++) assert.equal(s.colors.get((i + 1) + ',' + c) || null, row[12] && c >= 2 ? '#FCE8E6' : null, 'row ' + (i + 1) + ' column ' + c);
+      assert.equal(s.formatOf('fontColor', i + 1, 13) || null, row[12] ? '#9E2132' : null);
+    });
+    return flagged.length;
+  };
+  const before = check();
+  assert.ok(before > 0);
+  // Without gender data the gender flags go, and so do their fills.
+  f.sheets.get('Gender').data.splice(1);
+  f.adapter.sort('Fewer flags');
+  assert.ok(check() < before);
+});
