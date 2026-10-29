@@ -559,6 +559,32 @@ var PPAdapter = (function () {
     ].forEach(function (l) { lines.push({ cells: l.length ? [l[0]] : [], style: l[1] }); });
     writeLayout('PP Start here', [700], lines);
   }
+  // Tab order after Sort and Check again: the tabs to read first, the project tabs in number order,
+  // the grade tabs, then the other PP tabs and every other tab, each in the order it was in. A
+  // move is its own call, so a tab already in place stays put. Tabs are only moved and colored,
+  // never renamed or deleted, and only PP tabs get a color.
+  var FIRST_TABS = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary'];
+  var MAROON_TABS = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed'];
+  function isGroupTab(name) { return /^PP Group \d{2} /.test(name); }
+  function activeTab() { try { var s = ss().getActiveSheet(); return s ? s.getName() : null; } catch (e) { return null; } }
+  function arrangeTabs(show) {
+    var book = ss(), names = book.getSheets().map(function (s) { return s.getName(); });
+    function has(n) { return names.indexOf(n) >= 0; }
+    var front = FIRST_TABS.filter(has).concat(names.filter(isGroupTab).sort(), ['PP Senior', 'PP Junior', 'PP Sophomore'].filter(has));
+    var order = front.concat(names.filter(function (n) { return /^PP /.test(n) && front.indexOf(n) < 0; }), names.filter(function (n) { return !/^PP /.test(n); }));
+    order.forEach(function (name, i) {
+      if (names[i] === name) return;
+      book.setActiveSheet(book.getSheetByName(name)); book.moveActiveSheet(i + 1);
+      names.splice(names.indexOf(name), 1); names.splice(i, 0, name);
+    });
+    book.getSheets().forEach(function (s) {
+      var name = s.getName(), color = MAROON_TABS.indexOf(name) >= 0 || isGroupTab(name) ? '#9E2132' : '#999999';
+      if (/^PP /.test(name) && text(s.getTabColor()).toUpperCase() !== color) s.setTabColor(color);
+    });
+    // Moving tabs changes the active one, so show the tab asked for, or PP Start here.
+    var target = (show && book.getSheetByName(show)) || book.getSheetByName('PP Start here');
+    if (target) book.setActiveSheet(target);
+  }
   function output(input, result, config, decisions) {
     writeGradeTabs(input.students, result);
     writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.', config, decisions);
@@ -590,6 +616,8 @@ var PPAdapter = (function () {
     var allChecks = result.checks.concat(input.issues || [], result.issues || []), time = new Date(), by = activeUser();
     writeStartHere({ time: time, by: by, reason: reason }, null);
     appendRecord('PP Run log', { 'Time': time, 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': by });
+    // After Sort, PP Start here is the tab showing.
+    arrangeTabs('PP Start here');
     result.savedMoves = moves;
     return result;
   }
@@ -717,6 +745,7 @@ var PPAdapter = (function () {
     return out.concat(info.issues);
   }
   function checkAgain() {
+    var shown = activeTab();
     setup();
     var moves = saveMoves(), state;
     // Moves are saved before anything can stop Check again.
@@ -800,6 +829,8 @@ var PPAdapter = (function () {
     writeIssues('PP Check', checks);
     // Check again doesn't add to PP Run log, so the Sort line comes from its newest row.
     writeStartHere(lastSort(), { time: new Date(), by: activeUser() });
+    // The tab that was showing before Check again shows again after it.
+    arrangeTabs(shown);
     checks.savedMoves = moves;
     return checks;
   }

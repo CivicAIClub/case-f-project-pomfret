@@ -1088,3 +1088,48 @@ test('PP Start here shows the last Sort from PP Run log, adds a Check again line
   assert.match(lines()[2], new RegExp('^Checked again: ' + TIME + ' by teacher@example\\.org\\.$'));
   assert.equal(lines().filter(l => /^Checked again/.test(l)).length, 1);
 });
+
+// The order Part 7 asks for, worked out from the tabs there were before.
+function expectedOrder(before) {
+  const first = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary'].filter(n => before.includes(n));
+  const front = [...first, ...before.filter(n => /^PP Group \d{2} /.test(n)).sort(), ...['PP Senior', 'PP Junior', 'PP Sophomore'].filter(n => before.includes(n))];
+  return [...front, ...before.filter(n => n.startsWith('PP ') && !front.includes(n)), ...before.filter(n => !n.startsWith('PP '))];
+}
+test('after Sort and Check again the tabs are in order and colored, other tabs are never deleted or renamed, and the right tab shows', () => {
+  const f = fixture(true); f.adapter.practice();
+  // A tab of Mr. Litowitz's own, with its own color, between the source tabs.
+  const own = new Sheet('Notes for the faculty', [['Note'], ['Keep this']]); own.setTabColor('#00ff00');
+  const entries = [...f.sheets.entries()]; entries.splice(2, 0, [own.name, own]); f.sheets.clear(); entries.forEach(([k, v]) => f.sheets.set(k, v));
+  const others = () => [...f.sheets.values()].filter(s => !s.name.startsWith('PP '));
+  const othersBefore = others().map(s => [s.name, s]);
+  f.adapter.sort('Tab order');
+  const order = () => [...f.sheets.keys()];
+  assert.deepEqual(order(), expectedOrder(order()));
+  assert.deepEqual(order().slice(0, 6), ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary']);
+  const groups = order().filter(n => /^PP Group \d{2} /.test(n));
+  assert.equal(groups.length, 23); assert.deepEqual(order().slice(6, 29), groups.slice().sort());
+  assert.deepEqual(order().slice(29, 32), ['PP Senior', 'PP Junior', 'PP Sophomore']);
+  assert.ok(order().slice(32).every((n, i, all) => !all.slice(0, i).some(m => !m.startsWith('PP ')) || !n.startsWith('PP ')));
+  // Every other tab is still there, under its name, in the same order, with its own color.
+  assert.deepEqual(others().map(s => [s.name, s]), othersBefore);
+  assert.equal(own.getTabColor(), '#00ff00'); assert.deepEqual(own.data, [['Note'], ['Keep this']]);
+  // Colors.
+  for (const s of f.sheets.values()) {
+    if (!s.name.startsWith('PP ')) continue;
+    const maroon = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed'].includes(s.name) || /^PP Group \d{2} /.test(s.name);
+    assert.equal(s.getTabColor(), maroon ? '#9E2132' : '#999999', s.name);
+  }
+  // After Sort, PP Start here shows.
+  assert.equal(f.spreadsheet.getActiveSheet().name, 'PP Start here');
+  // A rerun with the tabs already in order moves nothing.
+  const moves = f.spreadsheet.moves; f.adapter.sort('Same order'); assert.equal(f.spreadsheet.moves, moves);
+  // Check again: the order holds, and the tab that was showing shows again.
+  const run = saved(f); moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2));
+  f.spreadsheet.setActiveSheet(f.sheets.get('PP Junior'));
+  f.adapter.checkAgain();
+  assert.deepEqual(order(), expectedOrder(order()));
+  assert.equal(f.spreadsheet.getActiveSheet().name, 'PP Junior');
+  f.spreadsheet.setActiveSheet(own); f.adapter.checkAgain();
+  assert.equal(f.spreadsheet.getActiveSheet().name, 'Notes for the faculty');
+  assert.deepEqual(others().map(s => [s.name, s]), othersBefore);
+});
