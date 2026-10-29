@@ -52,6 +52,27 @@ var PPAdapter = (function () {
     if (s.getMaxRows() < rows) s.insertRowsAfter(s.getMaxRows(), rows - s.getMaxRows());
     if (s.getMaxColumns() < cols) s.insertColumnsAfter(s.getMaxColumns(), cols - s.getMaxColumns());
   }
+  // Column widths in pixels by header, for every PP tab. A tab can set its own width for a header.
+  var WIDTHS = [
+    [['#'], 45], [['Grade', 'Fit #1', 'Fit #2'], 70], [['Status', 'Severity', 'Preference', 'Use'], 90],
+    [['Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it'], 85], [['Location'], 130],
+    [['Faculty', 'Project Faculty'], 160], [['Celebration of Learning'], 190], [['Name', 'Student', 'Classmate'], 210],
+    [['Student ID', 'Email', 'Classmate email', 'Code'], 230], [['Project', 'Project #1', 'Project #2', 'Project 1', 'Project 2'], 270],
+    [['Metric'], 420], [['Value'], 220], [['Why', 'Reason', 'Message', 'Student comment', 'Comment', 'Issues'], 560], [['Flags', 'Review flags'], 420]
+  ];
+  var TAB_WIDTHS = { 'PP Projects': { 'Project': 300, 'Flags': 300 } };
+  function widthOf(tab, header) {
+    var own = TAB_WIDTHS[tab] && TAB_WIDTHS[tab][header];
+    if (own) return own;
+    for (var i = 0; i < WIDTHS.length; i++) if (WIDTHS[i][0].indexOf(header) >= 0) return WIDTHS[i][1];
+    return 140;
+  }
+  // Calls fn(start, count, value) for each run of equal values, columns counted from 1.
+  function runs(list, fn) {
+    for (var i = 0; i < list.length;) { var j = i; while (j < list.length && list[j] === list[i]) j++; fn(i + 1, j - i, list[i]); i = j; }
+  }
+  // One setColumnWidths call per run of columns with the same width.
+  function setWidths(s, widths) { runs(widths, function (start, count, width) { s.setColumnWidths(start, count, width); }); }
   function write(name, headers, rows) {
     var s = sheet(name) || ss().insertSheet(name);
     var data = [headers].concat(rows).map(function (r) {
@@ -63,15 +84,21 @@ var PPAdapter = (function () {
     s.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
     s.setFrozenRows(1);
     if (data.length > 1) s.getRange(2, 1, data.length - 1, headers.length).setWrap(true);
-    s.autoResizeColumns(1, headers.length);
-    for (var c = 1; c <= headers.length; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    // PP tabs get widths from their headers. Other tabs, written only when Setup or Make practice
+    // data creates them, still size to their text.
+    if (/^PP /.test(name)) setWidths(s, headers.map(function (h) { return widthOf(name, h); }));
+    else {
+      s.autoResizeColumns(1, headers.length);
+      for (var c = 1; c <= headers.length; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    }
     return s;
   }
   // A tab laid out for reading and printing, like last year's master list and rosters. Each line is
   // { cells, style }: 'header' rows look like the other tabs' headers, and 'title' and 'total' rows
-  // are bold. Old formatting goes first, because rows move between runs.
-  function writeLayout(name, width, lines) {
-    var s = sheet(name) || ss().insertSheet(name);
+  // are bold. Row 1 isn't a header, so widths gives each column's width. Old formatting goes first,
+  // because rows move between runs.
+  function writeLayout(name, widths, lines) {
+    var s = sheet(name) || ss().insertSheet(name), width = widths.length;
     var data = lines.map(function (l) { var row = []; for (var i = 0; i < width; i++) row.push(safeCell((l.cells || [])[i])); return row; });
     resize(s, Math.max(1, data.length), width);
     s.clearContents(); s.clearFormats(); s.setFrozenRows(0);
@@ -80,8 +107,7 @@ var PPAdapter = (function () {
       if (l.style === 'header') s.getRange(i + 1, 1, 1, width).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
       else if (l.style) s.getRange(i + 1, 1, 1, width).setFontWeight('bold');
     });
-    s.autoResizeColumns(1, width);
-    for (var c = 1; c <= width; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
+    setWidths(s, widths);
     return s;
   }
   function seed(name, headers, rows) {
@@ -328,7 +354,7 @@ var PPAdapter = (function () {
         group.forEach(function (a) { var s = studentsById[a.studentId]; lines.push({ cells: [s.name || s.id, s.grade, s.celebration || '', a.reason] }); });
         lines.push({ cells: [(minor ? 'GROUP ' + (w + 1) + ' TOTAL - ' : 'TOTAL - ') + total(group.length)], style: 'total' });
       });
-      writeLayout(name, 4, lines);
+      writeLayout(name, [220, 70, 190, 620], lines);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
     oldRegistry.concat(result.projects.map(function (p, index) { return oldGroupTabName(index, p.name); })).forEach(function (name) {
@@ -364,7 +390,7 @@ var PPAdapter = (function () {
         lines.push({ cells: [s.name || s.id, projectToken(a.project1, result.projects), faculty(a.project1), projectToken(two, result.projects), faculty(two), a.reason] });
       });
     });
-    writeLayout('PP Master list', 6, lines);
+    writeLayout('PP Master list', [220, 270, 150, 270, 150, 560], lines);
   }
   var SUMMARY_LABELS = [['total', 'Students'], ['eligible', 'Students who can be placed'], ['placed', 'Placed'], ['excluded', 'Excluded (trip or freshman leader)'], ['needsReview', 'Need review'], ['majorStudents', 'Major students'], ['minorStudents', 'Minor students'], ['projectCount', 'Projects running'], ['minorProjectCount', 'Minor projects running']];
   function summaryRows(summary) {

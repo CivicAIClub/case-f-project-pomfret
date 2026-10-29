@@ -5,16 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const {Sheet, newDataValidation} = require('./helpers/fake-spreadsheet.cjs');
+const {Sheet, newDataValidation, spreadsheetFor} = require('./helpers/fake-spreadsheet.cjs');
 const realEngine = require('../core/engine.js');
 function fixture(useRealCore = false) {
-  const sheets = new Map();
-  const spreadsheet = {
-    getSheetByName: name => sheets.get(name) || null,
-    insertSheet: name => { const s = new Sheet(name); sheets.set(name, s); return s; },
-    getSheets: () => [...sheets.values()],
-    deleteSheet: sheet => { sheets.delete(sheet.name); }
-  };
+  const sheets = new Map(), spreadsheet = spreadsheetFor(sheets);
   const catalog = [
     { id: 'robotics', name: 'Robotics', length: 'Major', types: ['hands'], goals: ['9'], aliases: [], enabled: true },
     { id: 'cooking', name: 'Cooking', length: 'Minor', types: ['hands'], goals: ['3'], aliases: [], enabled: true },
@@ -46,7 +40,7 @@ function fixture(useRealCore = false) {
     sheets.set('Projects', new Sheet('Projects', [['Project', 'Length'], ['Robotics', 'Major']]));
     ['Senior', 'Junior', 'Sophomore'].forEach((name, i) => sheets.set(name, new Sheet(name, [['Timestamp', 'Email Address', 'Name', 'Comments'], ['2026-10-20', 'practice' + i + '@example.org', 'Practice Student ' + i, '=IMPORTXML("unsafe")']])));
   }
-  return { adapter, sheets, catalog, context, source, engine, checked: () => checkedAssignments, released: () => released };
+  return { adapter, sheets, spreadsheet, catalog, context, source, engine, checked: () => checkedAssignments, released: () => released };
 }
 function saved(f) {
   const run = { students: new Map(), assignments: new Map(), projects: [] };
@@ -931,4 +925,35 @@ test('a project tab name turns a slash into " - " and never has two spaces in a 
   f.sheets.get('PP Project tabs').data.push(['old', 'Old project', 'PP Group 02 Old project', 'Major']);
   f.adapter.sort('A project stopped running');
   assert.deepEqual(groups(), ['PP Group 01 A - B']);
+});
+
+// The widths Mr. Litowitz asked for, by header, written out here on their own.
+const WIDTH_TABLE = { '#': 45, 'Grade': 70, 'Fit #1': 70, 'Fit #2': 70, 'Status': 90, 'Severity': 90, 'Preference': 90, 'Use': 90,
+  'Week 1': 85, 'Week 2': 85, 'Male': 85, 'Female': 85, 'Seniors': 85, 'Juniors': 85, 'Sophomores': 85, 'Picked it': 85, 'Location': 130,
+  'Faculty': 160, 'Project Faculty': 160, 'Celebration of Learning': 190, 'Name': 210, 'Student': 210, 'Classmate': 210,
+  'Student ID': 230, 'Email': 230, 'Classmate email': 230, 'Code': 230, 'Project': 270, 'Project #1': 270, 'Project #2': 270, 'Project 1': 270, 'Project 2': 270,
+  'Metric': 420, 'Value': 220, 'Why': 560, 'Reason': 560, 'Message': 560, 'Student comment': 560, 'Comment': 560, 'Issues': 560, 'Flags': 420, 'Review flags': 420 };
+const ppTabs = f => [...f.sheets.values()].filter(s => s.name.startsWith('PP '));
+const layoutTab = name => name === 'PP Master list' || name === 'PP Start here' || /^PP Group \d{2} /.test(name);
+test('PP tabs get column widths from their headers and never auto-resize; the layout tabs use the widths their writers pass', () => {
+  const { f, run } = practiceRun('Widths');
+  const check = () => {
+    for (const s of ppTabs(f)) {
+      assert.equal(s.autoResized, 0, s.name);
+      if (layoutTab(s.name)) continue;
+      s.data[0].forEach((header, i) => assert.equal(s.getColumnWidth(i + 1), (s.name === 'PP Projects' && (header === 'Project' || header === 'Flags')) ? 300 : WIDTH_TABLE[header] ?? 140, s.name + ': ' + header));
+    }
+    const widths = (name, n) => Array.from({ length: n }, (_, i) => f.sheets.get(name).getColumnWidth(i + 1));
+    assert.deepEqual(widths('PP Master list', 6), [220, 270, 150, 270, 150, 560]);
+    const group = [...f.sheets.keys()].find(n => /^PP Group 01 /.test(n));
+    assert.deepEqual(widths(group, 4), [220, 70, 190, 620]);
+    assert.equal(f.sheets.get('PP Needs you').getColumnWidth(f.sheets.get('PP Needs you').data[0].indexOf('Reason') + 1), 560);
+  };
+  check();
+  // A run of equal widths is one call: PP Projects takes six.
+  assert.equal(f.sheets.get('PP Projects').widthCalls, 6);
+  // Setup and Make practice data still size the tabs they create to their text.
+  assert.ok(f.sheets.get('Settings').autoResized > 0);
+  moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
 });
