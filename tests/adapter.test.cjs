@@ -847,6 +847,60 @@ test('a Gender row saying Nonbinary reaches the sheet as written: counted as nei
   for (const tab of ['PP Check', 'PP Input check']) assert.ok(!f.sheets.get(tab).data.some(r => /unknown/i.test(String(r[2]))), tab);
 });
 
+test('a hand-typed student\'s row: Student ID works in the Gender tab: Male in PP Projects and the gender checks, and not "no gender on file"; "not an id" is still a warning', () => {
+  const f = fixture(true); f.adapter.practice();
+  // An invented junior with no form, so their Student ID is a row: ID.
+  const junior = f.sheets.get('Junior');
+  junior.data.push(['', '', 'Okafor, Robin', '', '', '', '', '', '', '']);
+  const id = 'row:junior:11:' + junior.data.length;
+  // The only Gender rows: that student as M, and one whose Email cell is neither an email nor a Student ID.
+  f.sheets.get('Gender').data.push([id, 'M'], ['not an id', 'F']);
+  f.adapter.sort('Gender by row ID');
+  const run = saved(f), a = run.assignments.get(id), students = f.sheets.get('PP Students').data;
+  assert.equal(run.students.get(id).gender, 'Male'); assert.equal(students.find(r => r[0] === id)[10], 'Male');
+  assert.equal(a.status, 'placed');
+  const groups = (a.project2 ? [[a.project1, 1], [a.project2, 2]] : [[a.project1, 0]]).map(([pid, week]) => ({ p: run.projects.find(p => p.id === pid), week }));
+  const escape = s => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  function counted() {
+    // PP Projects: the one Male student, once for each group they're in, and no Female students.
+    const tab = f.sheets.get('PP Projects').data, header = tab[0], per = (r, h) => String(r[header.indexOf(h)]).split(' / ').map(Number);
+    const male = tab.slice(1).flatMap(r => per(r, 'Male').map((n, w, all) => ({ group: r[header.indexOf('Project')] + (all.length === 2 ? ', week ' + (w + 1) : ''), n }))).filter(x => x.n);
+    assert.deepEqual(male.map(x => x.group).sort(), groups.map(g => label(g.p) + (g.week ? ', week ' + g.week : '')).sort());
+    assert.ok(male.every(x => x.n === 1));
+    assert.ok(tab.slice(1).every(r => per(r, 'Female').every(n => n === 0)));
+    for (const g of groups) assert.match(tab.find(r => r[1] === label(g.p))[header.indexOf('Flags')], /Fewer than 3 of one gender/);
+    // PP Check: each of their groups has 1 Male and 0 Female students, and gender data was supplied.
+    const check = f.sheets.get('PP Check').data, balance = check.filter(r => r[1] === 'GENDER_BALANCE').map(r => r[2]);
+    assert.equal(balance.length, groups.length);
+    for (const g of groups) assert.ok(balance.some(m => new RegExp('^' + escape(g.p.name) + (g.week ? ', week ' + g.week : '') + ': 1 Male and 0 Female students \\(\\d+ with no gender on file\\)\\. Gender balancing is turned off in Settings\\.$').test(m)), g.p.name);
+    assert.ok(!check.some(r => r[1] === 'NO_GENDER_DATA'));
+  }
+  counted();
+  // PP Input check: only "not an id" is a bad Gender row, and the student isn't one with no gender on file.
+  const input = f.sheets.get('PP Input check').data, placeable = students.slice(1).filter(r => r[4] === 'eligible' || r[4] === 'late').length;
+  assert.deepEqual(input.filter(r => r[1] === 'INVALID_GENDER_ROW').map(r => [r[0], r[2]]), [['warning', 'Gender row needs a valid email or Student ID.']]);
+  assert.ok(input.some(r => r[1] === 'GENDER_NOT_COUNTED' && r[2] === 'Of the students who can be placed, ' + (placeable - 1) + ' have no gender on file and 0 are not listed as Male or Female. Neither is counted as Male or Female in the groups.'));
+  // Check again rebuilds PP Projects and PP Check from the saved run, with the same counts.
+  f.adapter.checkAgain();
+  counted();
+});
+
+test('Status changes and Locked placements take a hand-typed student\'s row: Student ID', () => {
+  const f = fixture(true); f.adapter.practice();
+  const junior = f.sheets.get('Junior');
+  junior.data.push(['', '', 'Okafor, Robin', '', '', '', '', '', '', ''], ['', '', 'Quill, Casey', '', '', '', '', '', '', '']);
+  const away = 'row:junior:11:' + (junior.data.length - 1), locked = 'row:junior:11:' + junior.data.length;
+  // Status changes was fixed in this round; Locked placements already matched any Student ID.
+  f.sheets.get('Status changes').data.push([away, '', 'trip', 'Away that week']);
+  f.sheets.get('Locked placements').data.push([locked, '', 'MAJ-Robotics', '', 'Practice', '', 'Invented lock']);
+  f.adapter.sort('Row IDs in Status changes and Locked placements');
+  const run = saved(f);
+  assert.equal(run.students.get(away).status, 'trip'); assert.equal(run.assignments.get(away).status, 'excluded');
+  assert.ok(run.students.get(away).issues.includes('Status changed: Away that week'));
+  assert.deepEqual([run.assignments.get(locked).project1, run.assignments.get(locked).locked], ['robotics', true]);
+  for (const tab of ['PP Input check', 'PP Check']) assert.ok(!f.sheets.get(tab).data.some(r => /STATUS_CHANGE|LOCK_UNKNOWN/.test(r[1])), tab);
+});
+
 test('every flag is either information or needs a decision, and anything not on the information list needs a decision', () => {
   const f = fixture(true), decide = flag => f.adapter.needsDecision(flag);
   const information = ['Historical project not on current list; no renamed-project equivalence was assumed.', 'Latest timestamped submission retained; 1 older submission(s) removed.',
@@ -1091,6 +1145,92 @@ test('PP Start here shows the last Sort from PP Run log, adds a Check again line
   assert.match(lines()[1], new RegExp('^Last sorted: ' + TIME + ' by teacher@example\\.org\\. Reason: Second sort\\.$'));
   assert.match(lines()[2], new RegExp('^Checked again: ' + TIME + ' by teacher@example\\.org\\.$'));
   assert.equal(lines().filter(l => /^Checked again/.test(l)).length, 1);
+});
+
+// The Fit block on PP Start here, written out for each checkedBeforeInferred setting.
+const UN_LINE = "In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it.";
+const FIT_LINES = {
+  true: ['What the Fit numbers mean (1 is best)',
+    'Fit 1: checked the project, and it matches their type and their UN goal.',
+    'Fit 2: checked the project, and it matches their type.',
+    'Fit 3: checked the project, and it matches their UN goal.',
+    'Fit 4: checked the project, with no other match.',
+    "Fit 5: didn't check the project, but it matches both their type and their UN goal.",
+    "Fit 6: didn't check the project, and it matches only one of their type and UN goal, or neither.",
+    'Type is the Head, Hands, Heart or Feet answer on the form. Fit 1 to 4 means the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.'],
+  false: ['What the Fit numbers mean (1 is best)',
+    'Fit 1: checked the project, and it matches their type and their UN goal.',
+    'Fit 2: checked the project, and it matches their type.',
+    'Fit 3: checked the project, and it matches their UN goal.',
+    "Fit 4: didn't check the project, but it matches both their type and their UN goal.",
+    'Fit 5: checked the project, with no other match.',
+    "Fit 6: didn't check the project, and it matches only one of their type and UN goal, or neither.",
+    'Type is the Head, Hands, Heart or Feet answer on the form. Fit 1 to 3 and Fit 5 mean the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.']
+};
+const startLines = f => f.sheets.get('PP Start here').data.map(r => String(r[0] ?? ''));
+// Everything between the UN goal line and "To move a student".
+function fitBlock(f) {
+  const lines = startLines(f), un = lines.indexOf(UN_LINE), move = lines.indexOf('To move a student');
+  assert.ok(un > 0 && move > un, 'the UN goal line comes before "To move a student"');
+  return lines.slice(un + 1, move);
+}
+const settingTo = (f, key, value) => { f.sheets.get('Settings').data.find(r => r[0] === key)[1] = value; };
+test('PP Start here explains the Fit numbers between the UN goal line and "To move a student", after Sort and after Check again', () => {
+  const { f, run } = practiceRun('Fit legend');
+  const start = () => f.sheets.get('PP Start here'), rowOf = text => startLines(f).indexOf(text) + 1;
+  const check = () => {
+    // A blank line, the heading, the six Fit lines and the closing line, then the blank line before "To move a student".
+    assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.true, '']);
+    // The heading looks like "What's here".
+    const heading = rowOf('What the Fit numbers mean (1 is best)'), here = rowOf("What's here");
+    assert.ok(start().isBold(heading));
+    for (const kind of ['fontSize', 'fontColor', 'valign']) assert.equal(start().formatOf(kind, heading), start().formatOf(kind, here), kind);
+    assert.equal(start().getRange(heading, 1).getBackgrounds()[0][0], start().getRange(here, 1).getBackgrounds()[0][0]);
+    assert.ok(!start().data.flat().some(v => /—/.test(String(v))));
+  };
+  check();
+  moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+  assert.ok(startLines(f).some(l => /^Checked again: /.test(l)));
+});
+
+test('with checkedBeforeInferred FALSE, Fit 4 and Fit 5 swap and the closing line changes; Check again follows the saved run\'s setting', () => {
+  const { f } = practiceRun('Fit legend, checked after inferred', f => settingTo(f, 'checkedBeforeInferred', false));
+  assert.equal(saved(f).settings.checkedBeforeInferred, false);
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.false, '']);
+  f.adapter.checkAgain();
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.false, '']);
+  // Check again reads the setting from the saved run, so changing Settings alone doesn't change the
+  // lines; the Fit numbers on the tabs still come from that run. The next Sort uses the new value.
+  settingTo(f, 'checkedBeforeInferred', true);
+  assert.ok(f.adapter.checkAgain().some(c => c.code === 'stale_inputs'));
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.false, '']);
+  f.adapter.sort('Back to checked first');
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.true, '']);
+});
+
+test('each Fit line describes the case PPEngine.fit gives that number for, with checkedBeforeInferred TRUE and FALSE', () => {
+  // An invented student who checked a, b, c and d, with the Hands type and UN goal 3.
+  const student = { id: 'fit.check@example.org', choices: ['a', 'b', 'c', 'd'], types: ['hands'], goals: ['3'] };
+  const both = "didn't check the project, but it matches both their type and their UN goal.", oneOrNeither = "didn't check the project, and it matches only one of their type and UN goal, or neither.";
+  const cases = [
+    [{ id: 'a', types: ['hands'], goals: ['3'] }, 'checked the project, and it matches their type and their UN goal.'],
+    [{ id: 'b', types: ['hands'], goals: ['4'] }, 'checked the project, and it matches their type.'],
+    [{ id: 'c', types: ['feet'], goals: ['3'] }, 'checked the project, and it matches their UN goal.'],
+    [{ id: 'd', types: ['feet'], goals: ['4'] }, 'checked the project, with no other match.'],
+    [{ id: 'e', types: ['hands'], goals: ['3'] }, both],
+    [{ id: 'f', types: ['hands'], goals: ['4'] }, oneOrNeither],
+    [{ id: 'g', types: ['feet'], goals: ['3'] }, oneOrNeither],
+    [{ id: 'h', types: ['feet'], goals: ['4'] }, oneOrNeither]];
+  for (const checkedFirst of [true, false]) {
+    const { f } = practiceRun('Fit lines', f => settingTo(f, 'checkedBeforeInferred', checkedFirst)), lines = startLines(f), seen = new Set();
+    for (const [project, says] of cases) {
+      const tier = realEngine.fit(student, project, { ...realEngine.defaults, checkedBeforeInferred: checkedFirst }).tier;
+      seen.add(tier);
+      assert.equal(lines.find(l => l.startsWith('Fit ' + tier + ':')), 'Fit ' + tier + ': ' + says, project.id + ', checkedBeforeInferred ' + checkedFirst);
+    }
+    assert.deepEqual([...seen].sort(), [1, 2, 3, 4, 5, 6]);
+  }
 });
 
 // The order Part 7 asks for, worked out from the tabs there were before.

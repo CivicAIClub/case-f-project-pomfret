@@ -234,6 +234,22 @@ test('gender reads M, Male, Boy, F, Female and Girl in any case, keeps anything 
   assert.ok(!result.issues.some(i=>/unknown/i.test(i.message)));
 });
 
+test('Gender and Status changes take any Student ID, ignoring case and spaces like Friend requests, including a hand-typed row\'s row: ID',()=>{
+  // Two invented juniors with no form, so their Student IDs are row:junior:11:3 and row:junior:11:4.
+  const t=table([row('pat@example.org','Lane, Pat'),typed('Okafor, Robin'),typed('Quill, Casey')],11);
+  assert.deepEqual(parser.prepare([t],projects).students.filter(s=>!s.email).map(s=>s.id).sort(),['row:junior:11:3','row:junior:11:4']);
+  const result=parser.prepare([t],projects,{
+    genders:[{email:'row:junior:11:3',gender:'M'},{email:' ROW:Junior:11:4 ',gender:'f'},{email:'not an id',gender:'F'},{email:'row:junior:11:9',gender:'M'},{email:'pat@example.org',gender:'Female'}],
+    statusChanges:[{email:'row:junior:11:4',status:'trip',why:'Away that week'}]});
+  const by=id=>result.students.find(s=>s.id===id);
+  assert.deepEqual([by('row:junior:11:3').gender,by('row:junior:11:4').gender,by('pat@example.org').gender],['Male','Female','Female']);
+  assert.equal(by('row:junior:11:4').status,'trip'); assert.ok(by('row:junior:11:4').issues.includes('Status changed: Away that week'));
+  // "not an id" and a row: ID no student has are neither an email nor a known Student ID.
+  assert.deepEqual(result.issues.filter(i=>i.code==='INVALID_GENDER_ROW').map(i=>i.message),['Gender row needs a valid email or Student ID.','Gender row needs a valid email or Student ID.']);
+  assert.ok(!result.issues.some(i=>/STATUS_CHANGE/.test(i.code)));
+  assert.ok(!result.issues.some(i=>i.code==='GENDER_NOT_COUNTED'));
+});
+
 test('Celebration of Learning is read into celebration, keeping only the part before " - "',()=>{
   const question='What do you want to do for your Celebration of Learning? Pick one.';
   const answers=['Project Fair - I want to show the robot we built','Presentation','Performance – a scene from our play','',' Gallery Walk '];
