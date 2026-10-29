@@ -1061,3 +1061,30 @@ test('in the pasted bundle, reasons name UN goals from the parser\'s list and ne
   assert.ok(!reasons.some(r => /UN goal match \([^)]*\d/.test(r)));
   assert.ok(!reasons.some(r => /type match \([a-z]/.test(r)));
 });
+
+const TIME = '(January|February|March|April|May|June|July|August|September|October|November|December) \\d{1,2}, \\d{4} at \\d{1,2}:\\d\\d (AM|PM)';
+test('PP Start here shows the last Sort from PP Run log, adds a Check again line after Check again, and explains the tabs in plain English', () => {
+  const { f, run } = practiceRun('Start here practice');
+  const start = () => f.sheets.get('PP Start here'), lines = () => start().data.map(r => r[0]);
+  const log = f.sheets.get('PP Run log').data, newest = log[log.length - 1], header = log[0];
+  assert.equal(lines()[0], 'Project: Pomfret 2026-27: proposed groups');
+  assert.ok(start().isBold(1)); assert.equal(start().formatOf('fontSize', 1), 14);
+  assert.match(lines()[1], new RegExp('^Last sorted: ' + TIME + ' by teacher@example\\.org\\. Reason: Start here practice\\.$'));
+  assert.equal(newest[header.indexOf('Why')], 'Start here practice'); assert.equal(newest[header.indexOf('Run by')], 'teacher@example.org');
+  assert.ok(!lines().some(l => /^Checked again/.test(l)));
+  for (const expected of ["What's here", "PP Master list: every student's Project #1 and #2, with the reason.", 'PP Projects: one row per project, with sizes, boys and girls, grades, how many picked it, and flags.',
+    'PP Group tabs: one roster per project.', 'PP Needs you: students to look at.', 'PP Summary: the numbers.',
+    "In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it.",
+    'To move a student', 'Check again rebuilds every tab and keeps the move.', 'A student moved by hand stays where they were put if Sort is run again.',
+    "Don't edit PP Master list, PP Projects or the PP Group tabs directly. They're rebuilt each time."]) assert.ok(lines().includes(expected), expected);
+  assert.ok(lines().some(l => /^PP Not placed: students on trips, freshman leaders/.test(l)));
+  assert.ok(lines().some(l => /^Change their Project #1 and Project #2 on the PP Senior, PP Junior or PP Sophomore tab, then choose Check again from the Project: Pomfret menu\.$/.test(l)));
+  assert.ok(!start().data.flat().some(v => /—/.test(String(v))));
+  assert.equal(start().getColumnWidth(1), 700); assert.equal(start().formatOf('wrap', 2), true);
+  // A second Sort replaces the line; Check again keeps it and adds its own.
+  f.adapter.sort('Second sort');
+  moveToMajor(f, saved(f), placedRows(f, saved(f)).find(x => x.a.project2)); f.adapter.checkAgain();
+  assert.match(lines()[1], new RegExp('^Last sorted: ' + TIME + ' by teacher@example\\.org\\. Reason: Second sort\\.$'));
+  assert.match(lines()[2], new RegExp('^Checked again: ' + TIME + ' by teacher@example\\.org\\.$'));
+  assert.equal(lines().filter(l => /^Checked again/.test(l)).length, 1);
+});

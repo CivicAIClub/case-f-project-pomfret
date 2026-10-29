@@ -2305,6 +2305,43 @@ var PPAdapter = (function () {
     }));
     writeSeniorsToCheck(students, result);
   }
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  // A time as people write it, such as "October 28, 2026 at 3:15 PM", in the spreadsheet's time zone.
+  function when(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return text(d) || 'an unknown time';
+    try { return Utilities.formatDate(d, ss().getSpreadsheetTimeZone(), "MMMM d, yyyy 'at' h:mm a"); }
+    catch (e) { return MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() + ' at ' + (d.getHours() % 12 || 12) + ':' + String(d.getMinutes()).padStart(2, '0') + ' ' + (d.getHours() < 12 ? 'AM' : 'PM'); }
+  }
+  function sentence(v) { v = text(v); return v && !/[.!?]$/.test(v) ? v + '.' : v; }
+  // The newest row in PP Run log: when Sort ran, who ran it and the reason they typed.
+  function lastSort() {
+    var rows = records('PP Run log', ['Time', 'Why'], false, ['Run by']), r = rows[rows.length - 1];
+    return r ? { time: r.Time, by: text(r['Run by']) || 'unknown', reason: text(r.Why) } : null;
+  }
+  // The first tab to read: when the groups were made, what each tab is for, and how to move a student.
+  function writeStartHere(sorted, checked) {
+    var lines = [{ cells: ['Project: Pomfret 2026-27: proposed groups'], style: 'title' },
+      { cells: [sorted ? 'Last sorted: ' + when(sorted.time) + ' by ' + sorted.by + '. Reason: ' + sentence(sorted.reason) : 'Last sorted: PP Run log has no Sort yet.'] }];
+    if (checked) lines.push({ cells: ['Checked again: ' + when(checked.time) + ' by ' + checked.by + '.'] });
+    [[], ["What's here", 'heading'],
+      ["PP Master list: every student's Project #1 and #2, with the reason."],
+      ['PP Projects: one row per project, with sizes, boys and girls, grades, how many picked it, and flags.'],
+      ['PP Group tabs: one roster per project.'],
+      ['PP Needs you: students to look at.'],
+      ["PP Not placed: students on trips, freshman leaders and anyone else who isn't placed."],
+      ['PP Summary: the numbers.'],
+      [],
+      ["In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it."],
+      [],
+      ['To move a student', 'heading'],
+      ['Change their Project #1 and Project #2 on the PP Senior, PP Junior or PP Sophomore tab, then choose Check again from the Project: Pomfret menu.'],
+      ['Check again rebuilds every tab and keeps the move.'],
+      ['A student moved by hand stays where they were put if Sort is run again.'],
+      [],
+      ["Don't edit PP Master list, PP Projects or the PP Group tabs directly. They're rebuilt each time."]
+    ].forEach(function (l) { lines.push({ cells: l.length ? [l[0]] : [], style: l[1] }); });
+    writeLayout('PP Start here', [700], lines);
+  }
   function output(input, result, config, decisions) {
     writeGradeTabs(input.students, result);
     writeResults(input.students, result, 'Proposed groups. Read PP Check and PP Needs you before use.', config, decisions);
@@ -2332,8 +2369,10 @@ var PPAdapter = (function () {
     var result = PPEngine.sort(input.students, input.projects, config, decisions, context);
     snapshot(input, result, config, decisions);
     output(input, result, config, decisions);
-    var allChecks = result.checks.concat(input.issues || [], result.issues || []);
-    appendRecord('PP Run log', { 'Time': new Date(), 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': activeUser() });
+    // PP Start here shows the same time, person and reason as the PP Run log row.
+    var allChecks = result.checks.concat(input.issues || [], result.issues || []), time = new Date(), by = activeUser();
+    writeStartHere({ time: time, by: by, reason: reason }, null);
+    appendRecord('PP Run log', { 'Time': time, 'Why': reason, 'Fingerprint': result.fingerprint, 'Placed': result.summary.placed, 'Needs review': result.summary.needsReview, 'Errors': allChecks.filter(function (c) { return c.severity === 'error'; }).length, 'Warnings': allChecks.filter(function (c) { return c.severity === 'warning'; }).length, 'Tie seed': config.tieSeed, 'Run by': by });
     result.savedMoves = moves;
     return result;
   }
@@ -2542,6 +2581,8 @@ var PPAdapter = (function () {
     writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.', state.settings, state.choices);
     if (report) writeFriendCheck(report.rows);
     writeIssues('PP Check', checks);
+    // Check again doesn't add to PP Run log, so the Sort line comes from its newest row.
+    writeStartHere(lastSort(), { time: new Date(), by: activeUser() });
     checks.savedMoves = moves;
     return checks;
   }
