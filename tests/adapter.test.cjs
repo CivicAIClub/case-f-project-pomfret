@@ -1001,3 +1001,29 @@ test('the grade tabs keep their dropdowns after Sort and after Check again', () 
   check();
   f.adapter.sort('Sort again'); check();
 });
+
+test('layout tabs: shaded grade titles on PP Master list; a large label, gray Faculty and Location, shaded GROUP and TOTAL rows on the project tabs, each style in one call', () => {
+  const { f, run } = practiceRun('Layout styles');
+  const cells = (s, row, n) => Array.from({ length: n }, (_, i) => i + 1);
+  const list = f.sheets.get('PP Master list');
+  for (const [i, row] of list.data.entries()) {
+    const title = /^(SENIORS|JUNIORS|SOPHOMORES)$/.test(row[0]);
+    for (const c of cells(list, i + 1, 6)) {
+      assert.equal(list.colors.get((i + 1) + ',' + c) === '#F4E4E6', title, 'fill ' + (i + 1));
+      if (title) { assert.ok(list.isBold(i + 1, c)); assert.equal(list.formatOf('fontSize', i + 1, c), 12); }
+    }
+  }
+  const registry = new Map(f.sheets.get('PP Project tabs').data.slice(1).map(r => [r[0], r[2]]));
+  const minor = f.sheets.get(registry.get(run.projects.find(p => p.finalLength === 'Minor').id));
+  const style = (s, row) => ({ bold: s.isBold(row), size: s.formatOf('fontSize', row) || null, fill: s.colors.get(row + ',1') || null, color: s.formatOf('fontColor', row) || null });
+  assert.deepEqual(style(minor, 1), { bold: true, size: 14, fill: null, color: null });
+  assert.deepEqual([style(minor, 2), style(minor, 3)], [{ bold: false, size: null, fill: null, color: '#666666' }, { bold: false, size: null, fill: null, color: '#666666' }]);
+  for (const [i, row] of minor.data.entries()) {
+    const kind = /^GROUP \d \(week \d\)$/.test(row[0]) ? 'group' : /TOTAL - \d+ Students?$/.test(row[0]) ? 'total' : null;
+    if (!kind) continue;
+    for (let c = 1; c <= 4; c++) { assert.ok(minor.isBold(i + 1, c)); assert.equal(minor.colors.get((i + 1) + ',' + c), kind === 'group' ? '#F4E4E6' : '#EEEEEE'); }
+  }
+  assert.equal(minor.data.filter(r => /^GROUP \d \(week \d\)$/.test(r[0])).length, 2);
+  // Five styles on a Minor's tab (title, gray, GROUP, header, TOTAL): five calls, one per style.
+  assert.equal(minor.rangeLists, 5);
+});

@@ -109,19 +109,30 @@ var PPAdapter = (function () {
     }
     return s;
   }
+  // How each kind of line looks on a layout tab, applied to every line of that kind at once.
+  var LAYOUT_STYLES = {
+    header: function (r) { r.setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff'); },
+    title: function (r) { r.setFontWeight('bold').setFontSize(14); },
+    section: function (r) { r.setFontWeight('bold').setFontSize(12).setBackground('#F4E4E6'); },
+    group: function (r) { r.setFontWeight('bold').setBackground('#F4E4E6'); },
+    total: function (r) { r.setFontWeight('bold').setBackground('#EEEEEE'); },
+    heading: function (r) { r.setFontWeight('bold'); },
+    muted: function (r) { r.setFontColor('#666666'); }
+  };
+  function rowA1(row, width) { return 'A' + row + ':' + String.fromCharCode(64 + width) + row; }
   // A tab laid out for reading and printing, like last year's master list and rosters. Each line is
-  // { cells, style }: 'header' rows look like the other tabs' headers, and 'title' and 'total' rows
-  // are bold. Row 1 isn't a header, so widths gives each column's width and centered[i] says whether
-  // column i is centered. Old formatting goes first, because rows move between runs.
+  // { cells, style }, with a style from LAYOUT_STYLES or none. Row 1 isn't a header, so widths gives
+  // each column's width and centered[i] says whether column i is centered. Old formatting goes
+  // first, because rows move between runs.
   function writeLayout(name, widths, lines, centered) {
     var s = sheet(name) || ss().insertSheet(name), width = widths.length;
     var data = lines.map(function (l) { var row = []; for (var i = 0; i < width; i++) row.push(safeCell((l.cells || [])[i])); return row; });
     resize(s, Math.max(1, data.length), width);
     s.clearContents(); s.clearFormats(); s.setFrozenRows(0); s.setFrozenColumns(0);
     if (data.length) s.getRange(1, 1, data.length, width).setValues(data);
-    lines.forEach(function (l, i) {
-      if (l.style === 'header') s.getRange(i + 1, 1, 1, width).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
-      else if (l.style) s.getRange(i + 1, 1, 1, width).setFontWeight('bold');
+    Object.keys(LAYOUT_STYLES).forEach(function (style) {
+      var rows = []; lines.forEach(function (l, i) { if (l.style === style) rows.push(rowA1(i + 1, width)); });
+      if (rows.length) LAYOUT_STYLES[style](s.getRangeList(rows));
     });
     formatColumns(s, Math.max(1, data.length), widths, centered || widths.map(function () { return false; }));
     return s;
@@ -368,11 +379,11 @@ var PPAdapter = (function () {
     function total(n) { return n + (n === 1 ? ' Student' : ' Students'); }
     result.projects.forEach(function (p, index) {
       var name = groupTabName(index, p.name), minor = p.finalLength === 'Minor', where = info[p.id] || { faculty: '', location: '' };
-      var lines = [{ cells: [projectToken(p.id, result.projects)], style: 'title' }, { cells: [('Faculty: ' + where.faculty).trim()] }, { cells: [('Location: ' + where.location).trim()] }];
+      var lines = [{ cells: [projectToken(p.id, result.projects)], style: 'title' }, { cells: [('Faculty: ' + where.faculty).trim()], style: 'muted' }, { cells: [('Location: ' + where.location).trim()], style: 'muted' }];
       (minor ? [0, 1] : [0]).forEach(function (w) {
         var group = result.assignments.filter(function (a) { return a.status === 'placed' && studentsById[a.studentId] && (w ? a.project2 : a.project1) === p.id; });
         group.sort(function (a, b) { var x = studentsById[a.studentId], y = studentsById[b.studentId]; return y.grade - x.grade || byLastName(x, y); });
-        if (minor) { if (w) lines.push({ cells: [] }); lines.push({ cells: ['GROUP ' + (w + 1) + ' (week ' + (w + 1) + ')'], style: 'title' }); }
+        if (minor) { if (w) lines.push({ cells: [] }); lines.push({ cells: ['GROUP ' + (w + 1) + ' (week ' + (w + 1) + ')'], style: 'group' }); }
         lines.push({ cells: ['Student', 'Grade', 'Celebration of Learning', 'Why'], style: 'header' });
         group.forEach(function (a) { var s = studentsById[a.studentId]; lines.push({ cells: [s.name || s.id, s.grade, s.celebration || '', a.reason] }); });
         lines.push({ cells: [(minor ? 'GROUP ' + (w + 1) + ' TOTAL - ' : 'TOTAL - ') + total(group.length)], style: 'total' });
@@ -406,7 +417,7 @@ var PPAdapter = (function () {
     result.assignments.forEach(function (a) { byId[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade, i) {
       if (i) lines.push({ cells: [] });
-      lines.push({ cells: [GRADE_WORDS[grade].toUpperCase()], style: 'title' });
+      lines.push({ cells: [GRADE_WORDS[grade].toUpperCase()], style: 'section' });
       lines.push({ cells: ['Name', 'Project #1', 'Project Faculty', 'Project #2', 'Project Faculty', 'Why'], style: 'header' });
       students.filter(function (s) { return s.grade === grade && byId[s.id] && byId[s.id].status === 'placed'; }).sort(byLastName).forEach(function (s) {
         var a = byId[s.id], two = secondProject(a, result.projects);

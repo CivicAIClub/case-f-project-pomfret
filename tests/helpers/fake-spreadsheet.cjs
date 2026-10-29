@@ -47,6 +47,7 @@ class Sheet {
   getFrozenRows() { return this.frozen.rows; } getFrozenColumns() { return this.frozen.columns; }
   setTabColor(color) { this.tabColor = color; return this; } getTabColor() { return this.tabColor; }
   getRangeList(a1s) {
+    this.rangeLists = (this.rangeLists || 0) + 1;
     return new RangeList(a1s.map(a1 => {
       const [, c1, r1, c2, r2] = a1.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);
       return new Range(this, Number(r1), column(c1), Number(r2 || r1) - Number(r1) + 1, column(c2 || c1) - column(c1) + 1);
