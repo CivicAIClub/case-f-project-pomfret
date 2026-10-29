@@ -1133,3 +1133,33 @@ test('after Sort and Check again the tabs are in order and colored, other tabs a
   assert.equal(f.spreadsheet.getActiveSheet().name, 'Notes for the faculty');
   assert.deepEqual(others().map(s => [s.name, s]), othersBefore);
 });
+
+test('after every menu step (Prepare students, Count interest, Sort, Check again), every PP tab has its widths, top alignment and frozen header and none auto-resized', () => {
+  const f = fixture(true); f.adapter.practice(); f.adapter.prepare(); f.adapter.interest(); f.adapter.sort('Every menu step');
+  const run = saved(f); moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  const names = ppTabs(f).map(s => s.name);
+  for (const name of ['PP Students', 'PP Input check', 'PP Interest', 'PP Project check', 'PP Check', 'PP Run log', 'PP Run snapshot', 'PP Seniors to check', 'PP Friend check', 'PP Project tabs']) assert.ok(names.includes(name), name);
+  for (const s of ppTabs(f)) {
+    assert.equal(s.autoResized, 0, s.name);
+    const width = Math.max(...s.data.map(r => r.length));
+    for (let c = 1; c <= width; c++) { assert.ok(s.widths.has(c), s.name + ' width ' + c); assert.equal(s.formatOf('valign', 1, c), 'top', s.name); }
+    if (!layoutTab(s.name)) assert.equal(s.getFrozenRows(), 1, s.name);
+  }
+});
+
+test('the test spreadsheet records formats the way Sheets keeps them', () => {
+  const { spreadsheetFor } = require('./helpers/fake-spreadsheet.cjs'), sheets = new Map(), book = spreadsheetFor(sheets);
+  const a = book.insertSheet('A'), b = book.insertSheet('B'), c = book.insertSheet('C');
+  assert.equal(book.getActiveSheet(), c);
+  a.getRangeList(['B2:D2', 'A5']).setBackground('#123456').setFontSize(12);
+  assert.deepEqual([a.colors.get('2,2'), a.colors.get('2,4'), a.colors.get('2,5'), a.colors.get('5,1'), a.formatOf('fontSize', 2, 3)], ['#123456', '#123456', undefined, '#123456', 12]);
+  a.setColumnWidths(1, 3, 90); a.setFrozenRows(1); a.setFrozenColumns(2); a.setTabColor('#999999');
+  a.getRange(1, 1).setDataValidation({ values: ['x'] }); a.clearFormats();
+  // Formats and data validation go; widths, frozen rows and columns and the tab color stay.
+  assert.deepEqual([a.colors.size, a.formats.size, a.validations.size, a.getColumnWidth(2), a.getFrozenRows(), a.getFrozenColumns(), a.getTabColor()], [0, 0, 0, 90, 1, 2, '#999999']);
+  book.setActiveSheet(c); book.moveActiveSheet(1);
+  assert.deepEqual([...sheets.keys()], ['C', 'A', 'B']); assert.equal(book.moves, 1);
+  book.setActiveSheet(c); book.moveActiveSheet(3);
+  assert.deepEqual([...sheets.keys()], ['A', 'B', 'C']);
+  book.deleteSheet(b); assert.deepEqual([...sheets.keys()], ['A', 'C']);
+});
