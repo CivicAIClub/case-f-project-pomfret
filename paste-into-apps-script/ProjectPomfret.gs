@@ -1450,6 +1450,8 @@ var PPEngine = (function () {
       var line={row:r.row,name:String(r.name||'').trim(),classmate:String(r.classmate||'').trim(),request:String(r.request||'').trim(),result:'Not applied',why:''};
       var kind=plain(r.request)==='with'?'With':plain(r.request)==='not with'?'Not with':null,a=byKey[key(r.email)]||[],b=byKey[key(r.classmateEmail)]||[];
       if(!line.name&&!line.classmate&&!key(r.email)&&!key(r.classmateEmail))return;
+      // The IDs let a tab match a line to its students, never by name. A shared email has no ID.
+      line.studentId=a.length===1?a[0].id:null;line.classmateId=b.length===1?b[0].id:null;
       report.push(line);
       if(!cfg.useFriendRequests)line.why='Friend requests are turned off in Settings';
       else if(r.use!==true)line.why='Use is not checked';
@@ -1789,6 +1791,7 @@ var PPAdapter = (function () {
   'use strict';
   var INPUTS = [{ name: 'Senior', grade: 12 }, { name: 'Junior', grade: 11 }, { name: 'Sophomore', grade: 10 }];
   // Grade and group tabs get shared, and comments can name other students, so comments stay in PP Students.
+  // Friend requests show only on the grade tabs and PP Needs you, never on the printed or faculty tabs.
   var MASTER_HEADERS = ['Student ID', 'Name', 'Project #1', 'Project #2', 'Status', 'Fit #1', 'Fit #2', 'Reason', 'Review flags'];
   var SETTING_NOTES = {
     minSize: 'Minimum students in each group or each Minor week.',
@@ -1841,7 +1844,7 @@ var PPAdapter = (function () {
     [['Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it'], 85], [['Location'], 130],
     [['Faculty', 'Project Faculty'], 160], [['Celebration of Learning'], 190], [['Name', 'Student', 'Classmate'], 210],
     [['Student ID', 'Email', 'Classmate email', 'Code'], 230], [['Project', 'Project #1', 'Project #2', 'Project 1', 'Project 2'], 270],
-    [['Metric'], 420], [['Value'], 220], [['Why', 'Reason', 'Message', 'Student comment', 'Comment', 'Issues'], 560], [['Flags', 'Review flags'], 420]
+    [['Metric'], 420], [['Value'], 220], [['Why', 'Reason', 'Message', 'Student comment', 'Comment', 'Issues'], 560], [['Flags', 'Review flags', 'Friend requests'], 420]
   ];
   var TAB_WIDTHS = { 'PP Projects': { 'Project': 300, 'Flags': 300 } };
   function widthOf(tab, header) {
@@ -2128,10 +2131,41 @@ var PPAdapter = (function () {
     if (!labels.length) return null;
     return SpreadsheetApp.newDataValidation().requireValueInList(labels, true).setAllowInvalid(false).setHelpText('Pick a running MAJ- or MIN- project, or clear the cell.').build();
   }
+  // Each student's own friend requests and how they stand, from the report PP Friend check shows,
+  // matched by Student ID: "With Jane Doe: together. Not with Alex Kim: kept apart." Only the grade
+  // tabs and PP Needs you show it; a "Not with" request is private, so the printed and shared tabs
+  // never do.
+  function friendNotes(rows) {
+    var notes = {};
+    (rows || []).forEach(function (r) {
+      if (!r.studentId) return;
+      // "Use" is the column's name, so it keeps its capital.
+      var why = text(r.why).replace(/^(?!Use\b)./, function (c) { return c.toLowerCase(); }), plainKind = text(r.request).toLowerCase(), what;
+      var kind = plainKind === 'with' ? 'With' : plainKind === 'not with' ? 'Not with' : 'Request for';
+      if (r.result === 'Not applied') what = 'not used' + (why ? ' (' + why + ')' : '');
+      else if (kind === 'Not with') what = r.result === 'Together' ? 'together' + (why ? ' (' + why + ')' : '') : why || 'kept apart';
+      else what = r.result === 'Together' ? 'together' : 'not together' + (why ? ' (' + why + ')' : '');
+      var line = kind + ' ' + (text(r.classmate) || r.classmateId || 'a classmate') + ': ' + what + '.';
+      notes[r.studentId] = notes[r.studentId] ? notes[r.studentId] + ' ' + line : line;
+    });
+    return notes;
+  }
+  // Check again rewrites each grade tab's Friend requests column in one call, because a move by
+  // hand can change whether two friends are together. A grade tab from before the column gets it
+  // after Review flags.
+  function rewriteFriendColumns(notes) {
+    [12, 11, 10].forEach(function (grade) {
+      var name = masterName(grade), s = sheet(name, true), header = values(name, true)[0].map(text), added = header.indexOf('Friend requests') < 0;
+      if (added) { addColumns(name, ['Friend requests']); header = values(name, true)[0].map(text); }
+      var data = values(name, true), col = header.indexOf('Friend requests') + 1, id = header.indexOf('Student ID');
+      if (data.length > 1) s.getRange(2, col, data.length - 1, 1).setValues(data.slice(1).map(function (r) { return [notes[text(r[id])] || '']; }));
+      if (added) { s.setColumnWidth(col, widthOf(name, 'Friend requests')); s.getRange(1, col, data.length, 1).setWrap(true).setVerticalAlignment('top'); }
+    });
+  }
   // Like the master list, a Major shows its MAJ- label in both columns.
   function secondProject(a, projects) { return a.project2 || (lengthOf(a.project1, projects) === 'Major' ? a.project1 : null); }
   function writeGradeTabs(students, result) {
-    var assignmentsById = {}, dropdown = projectDropdown(result.projects);
+    var assignmentsById = {}, dropdown = projectDropdown(result.projects), notes = friendNotes(result.friends);
     result.assignments.forEach(function (a) { assignmentsById[a.studentId] = a; });
     [12, 11, 10].forEach(function (grade) {
       var name = masterName(grade), old = sheet(name);
@@ -2139,9 +2173,10 @@ var PPAdapter = (function () {
       if (old) old.getRange(1, 1, old.getMaxRows(), old.getMaxColumns()).clearDataValidations();
       var rows = students.filter(function (s) { return s.grade === grade; }).map(function (s) {
         var a = assignmentsById[s.id] || { status: 'review', reason: 'No assignment returned.', flags: ['Missing assignment'] };
-        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, decisionFlags(a).join('; ')];
+        return [s.id, s.name, projectToken(a.project1, result.projects), projectToken(secondProject(a, result.projects), result.projects), a.status, a.fit1, a.fit2, a.reason, decisionFlags(a).join('; '), notes[s.id] || ''];
       });
-      var tab = write(name, MASTER_HEADERS, rows);
+      // Friend requests comes after Review flags. Check again doesn't need it, so it isn't in MASTER_HEADERS.
+      var tab = write(name, MASTER_HEADERS.concat(['Friend requests']), rows);
       if (dropdown && rows.length) tab.getRange(2, MASTER_HEADERS.indexOf('Project #1') + 1, rows.length, 2).setDataValidation(dropdown);
     });
   }
@@ -2292,7 +2327,7 @@ var PPAdapter = (function () {
   }
   // Everything that follows from the placements. Check again rebuilds these from the grade tabs.
   function writeResults(students, result, status, config, decisions) {
-    var studentsById = {}, info = details();
+    var studentsById = {}, info = details(), notes = friendNotes(result.friends);
     students.forEach(function (s) { studentsById[s.id] = s; });
     writeMasterList(students, result, info);
     writeProjectsOverview(students, result, info, config, decisions);
@@ -2300,8 +2335,8 @@ var PPAdapter = (function () {
     writeGroupTabs(students, result, info);
     write('PP Summary', ['Metric', 'Value'], summaryRows(result.summary).concat([['Fingerprint', result.fingerprint], ['Review status', status]]));
     // Only students with something to decide: a flag or issue that needs a decision, or a review status.
-    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || decisionFlags(a, s).length); }).map(function (a) {
-      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, decisionFlags(a, s).join('; ')];
+    write('PP Needs you', ['Student ID', 'Name', 'Grade', 'Status', 'Reason', 'Flags', 'Friend requests'], result.assignments.filter(function (a) { var s = studentsById[a.studentId]; return s && (a.status === 'review' || decisionFlags(a, s).length); }).map(function (a) {
+      var s = studentsById[a.studentId]; return [s.id, s.name, s.grade, a.status, a.reason, decisionFlags(a, s).join('; '), notes[s.id] || ''];
     }));
     writeSeniorsToCheck(students, result);
   }
@@ -2337,6 +2372,7 @@ var PPAdapter = (function () {
       ['Change their Project #1 and Project #2 on the PP Senior, PP Junior or PP Sophomore tab, then choose Check again from the Project: Pomfret menu.'],
       ['Check again rebuilds every tab and keeps the move.'],
       ['A student moved by hand stays where they were put if Sort is run again.'],
+      ["The Friend requests column on those tabs shows each student's requests and whether they're met."],
       [],
       ["Don't edit PP Master list, PP Projects or the PP Group tabs directly. They're rebuilt each time."]
     ].forEach(function (l) { lines.push({ cells: l.length ? [l[0]] : [], style: l[1] }); });
@@ -2607,8 +2643,8 @@ var PPAdapter = (function () {
     // Rebuild what follows from the placements, from the grade tabs as they are now, without sorting.
     var summary = PPEngine.summarize ? PPEngine.summarize(state.students, state.projects, current, state.settings, state.choices) : {}, report = PPEngine.friends ? PPEngine.friends(state.students, state.projects, current, state.settings, friendRows, state.choices) : null;
     if (report) summary.friends = report.summary;
-    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.', state.settings, state.choices);
-    if (report) writeFriendCheck(report.rows);
+    writeResults(state.students, { assignments: current, projects: state.projects, summary: summary, fingerprint: state.fingerprint, friends: report ? report.rows : [] }, 'Rebuilt by Check again from the grade tabs. Read PP Check before use.', state.settings, state.choices);
+    if (report) { writeFriendCheck(report.rows); rewriteFriendColumns(friendNotes(report.rows)); }
     writeIssues('PP Check', checks);
     // Check again doesn't add to PP Run log, so the Sort line comes from its newest row.
     writeStartHere(lastSort(), { time: new Date(), by: activeUser() });

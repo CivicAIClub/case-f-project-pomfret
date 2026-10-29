@@ -415,6 +415,8 @@ var PPEngine = (function () {
       var line={row:r.row,name:String(r.name||'').trim(),classmate:String(r.classmate||'').trim(),request:String(r.request||'').trim(),result:'Not applied',why:''};
       var kind=plain(r.request)==='with'?'With':plain(r.request)==='not with'?'Not with':null,a=byKey[key(r.email)]||[],b=byKey[key(r.classmateEmail)]||[];
       if(!line.name&&!line.classmate&&!key(r.email)&&!key(r.classmateEmail))return;
+      // The IDs let a tab match a line to its students, never by name. A shared email has no ID.
+      line.studentId=a.length===1?a[0].id:null;line.classmateId=b.length===1?b[0].id:null;
       report.push(line);
       if(!cfg.useFriendRequests)line.why='Friend requests are turned off in Settings';
       else if(r.use!==true)line.why='Use is not checked';

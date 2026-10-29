@@ -956,3 +956,9 @@ test('a reason names each UN goal and capitalizes types',()=>{
   const r=E.sort([s('m',{preference:'Minor',choices:['m1','m2']})],[p('m1','Minor'),p('m2','Minor',{goals:['17']})],config({projectCount:2,minorProjects:2,minorMin:1,minorTarget:1,minorMax:1}),{});
   assert.match(r.assignments[0].reason,/^Week 1: Checked this project; type match \(Hands\); (UN goal match \(Good Health and Well-Being\)|no UN goal match)\. Week 2: /);
 });
+
+test('each friend report line carries the student\'s and the classmate\'s IDs, and a shared email carries none',()=>{
+  const students=[s('ann'),s('bea'),s('cy'),{...s('dee'),email:'cy@example.org',id:'cy@example.org:dee'}];
+  const r=E.sort(students,[p('a'),p('b')],config({maxSize:4,useFriendRequests:true}),{},{friends:[ask('ann','bea'),ask('bea','nobody'),{...ask('ann','x'),classmateEmail:'cy@example.org'}]});
+  assert.deepEqual(r.friends.map(l=>[l.studentId,l.classmateId]),[['ann','bea'],['bea',null],['ann',null]]);
+});

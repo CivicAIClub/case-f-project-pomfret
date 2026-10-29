@@ -99,7 +99,7 @@ test('sort creates roster outputs, keeps comments as text in PP Students and app
   const master = f.sheets.get('PP Senior').data, students = f.sheets.get('PP Students').data;
   assert.equal(master[1][2], 'MAJ-Robotics');
   assert.equal(master[1][3], 'MAJ-Robotics');
-  assert.equal(master[0].length, 9);
+  assert.equal(master[0].length, 10); assert.equal(master[0][9], 'Friend requests');
   assert.equal(students[1][students[0].indexOf('Student comment')], "'=IMPORTXML(\"unsafe\")");
   assert.equal(f.sheets.get('PP Run log').data.length, 2);
   f.adapter.sort('Same settings reproducibility check');
@@ -573,7 +573,10 @@ test('friend requests are read by header name, use only rows marked Use, and fil
   const plain = practiceRun('Without friend requests'), off = fixture(true); off.adapter.practice();
   off.sheets.set('Friend requests', new Sheet('Friend requests', f.sheets.get('Friend requests').data.map(r => r.slice())));
   off.adapter.sort('Friend requests off');
-  for (const tab of GRADE_TABS) assert.deepEqual(off.sheets.get(tab).data, plain.f.sheets.get(tab).data);
+  // The groups match; only the Friend requests column says the requests are turned off.
+  const withoutFriends = data => data.map(r => r.slice(0, 9));
+  for (const tab of GRADE_TABS) assert.deepEqual(withoutFriends(off.sheets.get(tab).data), withoutFriends(plain.f.sheets.get(tab).data));
+  assert.equal(off.sheets.get('PP Senior').data.find(r => r[0] === 'practice1@example.org')[9], 'With Practice Student 002: not used (friend requests are turned off in Settings).');
   assert.ok(off.sheets.get('PP Friend check').data.slice(1).every(r => r[3] === 'Not applied' && r[4] === 'Friend requests are turned off in Settings'));
 });
 test('Check again reports a "Not with" pair put together by hand and rebuilds PP Friend check', () => {
@@ -932,7 +935,7 @@ const WIDTH_TABLE = { '#': 45, 'Grade': 70, 'Fit #1': 70, 'Fit #2': 70, 'Status'
   'Week 1': 85, 'Week 2': 85, 'Male': 85, 'Female': 85, 'Seniors': 85, 'Juniors': 85, 'Sophomores': 85, 'Picked it': 85, 'Location': 130,
   'Faculty': 160, 'Project Faculty': 160, 'Celebration of Learning': 190, 'Name': 210, 'Student': 210, 'Classmate': 210,
   'Student ID': 230, 'Email': 230, 'Classmate email': 230, 'Code': 230, 'Project': 270, 'Project #1': 270, 'Project #2': 270, 'Project 1': 270, 'Project 2': 270,
-  'Metric': 420, 'Value': 220, 'Why': 560, 'Reason': 560, 'Message': 560, 'Student comment': 560, 'Comment': 560, 'Issues': 560, 'Flags': 420, 'Review flags': 420 };
+  'Metric': 420, 'Value': 220, 'Why': 560, 'Reason': 560, 'Message': 560, 'Student comment': 560, 'Comment': 560, 'Issues': 560, 'Flags': 420, 'Review flags': 420, 'Friend requests': 420 };
 const ppTabs = f => [...f.sheets.values()].filter(s => s.name.startsWith('PP '));
 const layoutTab = name => name === 'PP Master list' || name === 'PP Start here' || /^PP Group \d{2} /.test(name);
 test('PP tabs get column widths from their headers and never auto-resize; the layout tabs use the widths their writers pass', () => {
@@ -1076,6 +1079,7 @@ test('PP Start here shows the last Sort from PP Run log, adds a Check again line
     'PP Group tabs: one roster per project.', 'PP Needs you: students to look at.', 'PP Summary: the numbers.',
     "In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it.",
     'To move a student', 'Check again rebuilds every tab and keeps the move.', 'A student moved by hand stays where they were put if Sort is run again.',
+    "The Friend requests column on those tabs shows each student's requests and whether they're met.",
     "Don't edit PP Master list, PP Projects or the PP Group tabs directly. They're rebuilt each time."]) assert.ok(lines().includes(expected), expected);
   assert.ok(lines().some(l => /^PP Not placed: students on trips, freshman leaders/.test(l)));
   assert.ok(lines().some(l => /^Change their Project #1 and Project #2 on the PP Senior, PP Junior or PP Sophomore tab, then choose Check again from the Project: Pomfret menu\.$/.test(l)));
@@ -1162,4 +1166,70 @@ test('the test spreadsheet records formats the way Sheets keeps them', () => {
   book.setActiveSheet(c); book.moveActiveSheet(3);
   assert.deepEqual([...sheets.keys()], ['A', 'B', 'C']);
   book.deleteSheet(b); assert.deepEqual([...sheets.keys()], ['A', 'C']);
+});
+
+test('the Friend requests column shows each student\'s own requests on the grade tabs and PP Needs you, matched by ID, and Check again keeps it current', () => {
+  const f = fixture(true); f.adapter.practice();
+  const plain = f.adapter.sort('Find friends'), first = saved(f), students = [...first.students.values()], at = id => first.assignments.get(id);
+  const majors = students.filter(s => at(s.id).status === 'placed' && !at(s.id).project2), minors = students.filter(s => at(s.id).project2);
+  const a = majors[0], b = majors.find(s => s !== a && at(s.id).project1 === at(a.id).project1), c = minors[0];
+  const d = majors.find(s => ![a, b].includes(s)), e = majors.find(s => ![a, b, d].includes(s) && at(s.id).project1 !== at(d.id).project1);
+  const g = students.find(s => ![a, b, c, d, e].includes(s)), fit6 = students.find(s => at(s.id).flags.includes('Fit 6: review the placement.') && ![a, b, c, d, e, g].includes(s));
+  const row = (from, to, request, use = true, typed = '') => [typed || from.name, '', request, to.name, '', false, '', '', use, '', from.id, to.id];
+  // The row for a and c has someone else's name typed in, so only the ID can match it.
+  f.sheets.get('Friend requests').data.push(row(a, b, 'With'), row(b, a, 'With'), row(a, c, 'With', true, g.name), row(d, e, 'Not with'), row(fit6, g, 'With', false));
+  f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+  f.adapter.sort('Friend requests column');
+  const cell = s => { const tab = f.sheets.get(['', '', '', '', '', '', '', '', '', '', 'PP Sophomore', 'PP Junior', 'PP Senior'][s.grade]); return tab.data.find(r => r[0] === s.id)[tab.data[0].indexOf('Friend requests')]; };
+  const report = f.sheets.get('PP Friend check').data, whyFor = (from, to) => report.find(r => r[0] === (from === a && to === c ? g.name : from.name) && r[1] === to.name)[4];
+  const lower = v => v.charAt(0).toLowerCase() + v.slice(1);
+  assert.match(whyFor(a, c), /^One (is in a Major and the other is in Minors|asked for a Major and the other for Minors)$/);
+  assert.equal(cell(a), 'With ' + b.name + ': together. With ' + c.name + ': not together (' + lower(whyFor(a, c)) + ').');
+  assert.equal(cell(b), 'With ' + a.name + ': together.');
+  assert.equal(cell(c), '');
+  assert.equal(cell(d), 'Not with ' + e.name + ': kept apart.');
+  assert.equal(cell(e), '');
+  assert.equal(cell(fit6), 'With ' + g.name + ': not used (Use is not checked).');
+  assert.equal(cell(g), '');
+  // PP Needs you shows the same text for the students it lists.
+  const needs = f.sheets.get('PP Needs you').data;
+  assert.equal(needs[0][6], 'Friend requests');
+  assert.equal(needs.find(r => r[0] === fit6.id)[6], cell(fit6));
+  for (const r of needs.slice(1)) assert.equal(r[6], cell(first.students.get(r[0])));
+  // Never on the printed or shared tabs.
+  const shared = [...f.sheets.values()].filter(s => /^PP (Master list|Projects|Start here|Group \d{2} .+)$/.test(s.name));
+  assert.ok(shared.length > 20);
+  for (const s of shared) assert.ok(!s.data.flat().some(v => /Friend requests$|: together\.|: kept apart\.|not used \(/.test(String(v))), s.name);
+  // A move by hand that splits a and b changes both students' column after Check again.
+  const run = saved(f), pick = placedRows(f, run).find(x => x.row[0] === a.id);
+  pick.row[2] = pick.row[3] = label(run.projects.find(p => p.finalLength === 'Major' && p.id !== pick.a.project1));
+  f.adapter.checkAgain();
+  // a and c are still on different tracks, so that reason stays.
+  assert.equal(cell(a), 'With ' + b.name + ': not together (not in the same group). With ' + c.name + ': not together (' + lower(whyFor(a, c)) + ').');
+  assert.equal(cell(b), 'With ' + a.name + ': not together (not in the same group).');
+  // Editing the column by hand isn't a change to the row, and Check again writes it back.
+  const tabOf = s => f.sheets.get(['', '', '', '', '', '', '', '', '', '', 'PP Sophomore', 'PP Junior', 'PP Senior'][s.grade]);
+  tabOf(d).data.find(r => r[0] === d.id)[9] = 'Typed over';
+  const checks = [...f.adapter.checkAgain()];
+  assert.ok(!checks.some(x => x.code === 'manual_edit' && x.studentId === d.id));
+  assert.equal(cell(d), 'Not with ' + e.name + ': kept apart.');
+});
+
+test('Check again works on a grade tab from before the Friend requests column and adds it after Review flags', () => {
+  const f = fixture(true); f.adapter.practice();
+  const students = f.sheets.get('Senior').data;
+  f.sheets.get('Friend requests').data.push(['', '', 'With', '', '', false, '', '', true, '', students[1][1], students[2][1]]);
+  f.sheets.get('Settings').data.find(r => r[0] === 'useFriendRequests')[1] = true;
+  f.adapter.sort('Before the column');
+  // A grade tab written before this round has no Friend requests column.
+  for (const tab of GRADE_TABS) f.sheets.get(tab).data.forEach(r => r.splice(9));
+  const checks = [...f.adapter.checkAgain()];
+  assert.ok(!checks.some(x => x.code === 'manual_edit'));
+  for (const tab of GRADE_TABS) {
+    const s = f.sheets.get(tab);
+    assert.deepEqual(s.data[0].slice(8), ['Review flags', 'Friend requests'], tab);
+    assert.ok(s.isBold(1, 10)); assert.equal(s.getColumnWidth(10), 420); assert.equal(s.formatOf('wrap', 2, 10), true);
+  }
+  const senior = f.sheets.get('PP Senior').data.find(r => r[0] === students[1][1]);
+  assert.match(senior[9], /^With .+: (together|not together \(.+\))\.$/);
 });
