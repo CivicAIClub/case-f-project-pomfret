@@ -957,3 +957,47 @@ test('PP tabs get column widths from their headers and never auto-resize; the la
   moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
   check();
 });
+
+test('every written cell is aligned to the top, long-text columns wrap, number columns are centered, and the right rows and columns are frozen', () => {
+  const { f, run } = practiceRun('Text and alignment');
+  const check = () => {
+    for (const s of ppTabs(f)) {
+      const width = Math.max(...s.data.map(r => r.length)), layout = layoutTab(s.name);
+      // Every written cell, header included, is aligned to the top.
+      for (let r = 1; r <= s.data.length; r++) for (let c = 1; c <= width; c++) assert.equal(s.formatOf('valign', r, c), 'top', s.name + ' ' + r + ',' + c);
+      assert.deepEqual([s.getFrozenRows(), s.getFrozenColumns()], [layout ? 0 : 1, ['PP Needs you', 'PP Projects', 'PP Senior', 'PP Junior', 'PP Sophomore'].includes(s.name) ? 2 : 0], s.name);
+      for (let c = 1; c <= width; c++) {
+        const header = layout ? null : s.data[0][c - 1], last = s.data.length;
+        assert.equal(s.formatOf('wrap', last, c) === true, s.getColumnWidth(c) >= 420, s.name + ' wrap ' + c);
+        if (header !== null) assert.equal(s.formatOf('halign', last, c) === 'center', ['#', 'Grade', 'Fit #1', 'Fit #2', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Checked', 'Checked + Type or goal'].includes(header), s.name + ' center ' + header);
+      }
+      // The maroon header row, as before.
+      if (!layout) for (let c = 1; c <= width; c++) { assert.ok(s.isBold(1, c)); assert.equal(s.colors.get('1,' + c), '#9e2132'); assert.equal(s.formatOf('fontColor', 1, c), '#ffffff'); }
+    }
+    // On a project tab only Grade is centered.
+    const group = f.sheets.get([...f.sheets.keys()].find(n => /^PP Group 01 /.test(n)));
+    assert.deepEqual([1, 2, 3, 4].map(c => group.formatOf('halign', 5, c) || ''), ['', 'center', '', '']);
+  };
+  check();
+  // A fill left on a row from an earlier run is gone after the next write.
+  f.sheets.get('PP Needs you').getRange(3, 1, 1, 6).setBackground('#00ff00');
+  f.adapter.sort('Rerun');
+  assert.equal(f.sheets.get('PP Needs you').colors.get('3,1'), undefined);
+  moveToMajor(f, run, placedRows(f, saved(f)).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+});
+
+test('the grade tabs keep their dropdowns after Sort and after Check again', () => {
+  const { f, run } = practiceRun('Dropdowns'), labels = run.projects.map(label).sort();
+  const check = () => {
+    for (const tab of GRADE_TABS) {
+      const sheet = f.sheets.get(tab), rows = sheet.data.length - 1, rules = sheet.getRange(2, 3, rows, 2).getDataValidations().flat();
+      assert.equal(rules.filter(Boolean).length, rows * 2, tab);
+      for (const rule of rules) assert.deepEqual(rule.values, labels);
+    }
+  };
+  check();
+  moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+  f.adapter.sort('Sort again'); check();
+});

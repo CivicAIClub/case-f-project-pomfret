@@ -1846,23 +1846,39 @@ var PPAdapter = (function () {
   function runs(list, fn) {
     for (var i = 0; i < list.length;) { var j = i; while (j < list.length && list[j] === list[i]) j++; fn(i + 1, j - i, list[i]); i = j; }
   }
-  // One setColumnWidths call per run of columns with the same width.
-  function setWidths(s, widths) { runs(widths, function (start, count, width) { s.setColumnWidths(start, count, width); }); }
+  // Columns this wide hold long text, so they wrap. The #, Grade, Fit and count columns are centered.
+  var LONG_TEXT = 420;
+  var CENTERED = ['#', 'Grade', 'Fit #1', 'Fit #2', 'Week 1', 'Week 2', 'Male', 'Female', 'Seniors', 'Juniors', 'Sophomores', 'Picked it', 'Checked', 'Checked + Type or goal'];
+  // Tabs that keep their first two columns (the student or project) in view while scrolling.
+  var FREEZE_TWO = ['PP Needs you', 'PP Projects', 'PP Senior', 'PP Junior', 'PP Sophomore'];
+  // One setColumnWidths call per run of columns with the same width, and one call per run for
+  // wrapping and centering. Every written cell is aligned to the top.
+  function formatColumns(s, rows, widths, centered) {
+    runs(widths, function (start, count, width) { s.setColumnWidths(start, count, width); });
+    s.getRange(1, 1, rows, widths.length).setVerticalAlignment('top');
+    runs(widths.map(function (w) { return w >= LONG_TEXT; }), function (start, count, wrap) { if (wrap) s.getRange(1, start, rows, count).setWrap(true); });
+    runs(centered, function (start, count, center) { if (center) s.getRange(1, start, rows, count).setHorizontalAlignment('center'); });
+  }
   function write(name, headers, rows) {
     var s = sheet(name) || ss().insertSheet(name);
     var data = [headers].concat(rows).map(function (r) {
       return headers.map(function (_, i) { return safeCell(r[i]); });
     });
     resize(s, data.length, headers.length);
-    s.clearContents();
+    // Old formatting goes first, so a row's fill doesn't stay behind when rows move between runs.
+    // The grade tabs' dropdowns are set after this returns.
+    s.clearContents(); s.clearFormats();
     s.getRange(1, 1, data.length, headers.length).setValues(data);
     s.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
     s.setFrozenRows(1);
-    if (data.length > 1) s.getRange(2, 1, data.length - 1, headers.length).setWrap(true);
     // PP tabs get widths from their headers. Other tabs, written only when Setup or Make practice
     // data creates them, still size to their text.
-    if (/^PP /.test(name)) setWidths(s, headers.map(function (h) { return widthOf(name, h); }));
-    else {
+    if (/^PP /.test(name)) {
+      s.setFrozenColumns(FREEZE_TWO.indexOf(name) >= 0 ? 2 : 0);
+      formatColumns(s, data.length, headers.map(function (h) { return widthOf(name, h); }), headers.map(function (h) { return CENTERED.indexOf(h) >= 0; }));
+    } else {
+      s.getRange(1, 1, data.length, headers.length).setVerticalAlignment('top');
+      if (data.length > 1) s.getRange(2, 1, data.length - 1, headers.length).setWrap(true);
       s.autoResizeColumns(1, headers.length);
       for (var c = 1; c <= headers.length; c++) if (s.getColumnWidth(c) > 420) s.setColumnWidth(c, 420);
     }
@@ -1870,19 +1886,19 @@ var PPAdapter = (function () {
   }
   // A tab laid out for reading and printing, like last year's master list and rosters. Each line is
   // { cells, style }: 'header' rows look like the other tabs' headers, and 'title' and 'total' rows
-  // are bold. Row 1 isn't a header, so widths gives each column's width. Old formatting goes first,
-  // because rows move between runs.
-  function writeLayout(name, widths, lines) {
+  // are bold. Row 1 isn't a header, so widths gives each column's width and centered[i] says whether
+  // column i is centered. Old formatting goes first, because rows move between runs.
+  function writeLayout(name, widths, lines, centered) {
     var s = sheet(name) || ss().insertSheet(name), width = widths.length;
     var data = lines.map(function (l) { var row = []; for (var i = 0; i < width; i++) row.push(safeCell((l.cells || [])[i])); return row; });
     resize(s, Math.max(1, data.length), width);
-    s.clearContents(); s.clearFormats(); s.setFrozenRows(0);
-    if (data.length) s.getRange(1, 1, data.length, width).setValues(data).setWrap(true);
+    s.clearContents(); s.clearFormats(); s.setFrozenRows(0); s.setFrozenColumns(0);
+    if (data.length) s.getRange(1, 1, data.length, width).setValues(data);
     lines.forEach(function (l, i) {
       if (l.style === 'header') s.getRange(i + 1, 1, 1, width).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
       else if (l.style) s.getRange(i + 1, 1, 1, width).setFontWeight('bold');
     });
-    setWidths(s, widths);
+    formatColumns(s, Math.max(1, data.length), widths, centered || widths.map(function () { return false; }));
     return s;
   }
   function seed(name, headers, rows) {
@@ -1898,8 +1914,15 @@ var PPAdapter = (function () {
     s.getRange(1, last + 1, 1, missing.length).setValues([missing]).setFontWeight('bold').setBackground('#9e2132').setFontColor('#ffffff');
   }
   function appendRecord(name, record) {
-    var header = values(name, true)[0].map(text);
-    sheet(name, true).appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
+    var header = values(name, true)[0].map(text), s = sheet(name, true);
+    s.appendRow(header.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? safeCell(record[h]) : ''; }));
+    // A row added to a PP tab, such as PP Run log, is formatted like the rows write() puts there.
+    if (/^PP /.test(name)) {
+      var row = s.getLastRow();
+      s.getRange(row, 1, 1, header.length).setVerticalAlignment('top');
+      runs(header.map(function (h) { return widthOf(name, h) >= LONG_TEXT; }), function (start, count, wrap) { if (wrap) s.getRange(row, start, 1, count).setWrap(true); });
+      runs(header.map(function (h) { return CENTERED.indexOf(h) >= 0; }), function (start, count, center) { if (center) s.getRange(row, start, 1, count).setHorizontalAlignment('center'); });
+    }
   }
   // optional lists columns that may be missing; each one present is read like the others.
   function records(name, headers, required, optional) {
@@ -2129,7 +2152,7 @@ var PPAdapter = (function () {
         group.forEach(function (a) { var s = studentsById[a.studentId]; lines.push({ cells: [s.name || s.id, s.grade, s.celebration || '', a.reason] }); });
         lines.push({ cells: [(minor ? 'GROUP ' + (w + 1) + ' TOTAL - ' : 'TOTAL - ') + total(group.length)], style: 'total' });
       });
-      writeLayout(name, [220, 70, 190, 620], lines);
+      writeLayout(name, [220, 70, 190, 620], lines, [false, true, false, false]);
       newRegistry.push([p.id, p.name, name, p.finalLength]);
     });
     oldRegistry.concat(result.projects.map(function (p, index) { return oldGroupTabName(index, p.name); })).forEach(function (name) {
