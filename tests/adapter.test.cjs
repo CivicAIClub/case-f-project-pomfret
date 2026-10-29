@@ -1093,6 +1093,92 @@ test('PP Start here shows the last Sort from PP Run log, adds a Check again line
   assert.equal(lines().filter(l => /^Checked again/.test(l)).length, 1);
 });
 
+// The Fit block on PP Start here, written out for each checkedBeforeInferred setting.
+const UN_LINE = "In a reason, a UN goal is one of the United Nations' 17 Sustainable Development Goals. A match means the student chose that goal on the form and the project is tagged with it.";
+const FIT_LINES = {
+  true: ['What the Fit numbers mean (1 is best)',
+    'Fit 1: checked the project, and it matches their type and their UN goal.',
+    'Fit 2: checked the project, and it matches their type.',
+    'Fit 3: checked the project, and it matches their UN goal.',
+    'Fit 4: checked the project, with no other match.',
+    "Fit 5: didn't check the project, but it matches both their type and their UN goal.",
+    "Fit 6: didn't check the project, and it doesn't match both.",
+    'Type is the Head, Hands, Heart or Feet answer on the form. Fit 1 to 4 means the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.'],
+  false: ['What the Fit numbers mean (1 is best)',
+    'Fit 1: checked the project, and it matches their type and their UN goal.',
+    'Fit 2: checked the project, and it matches their type.',
+    'Fit 3: checked the project, and it matches their UN goal.',
+    "Fit 4: didn't check the project, but it matches both their type and their UN goal.",
+    'Fit 5: checked the project, with no other match.',
+    "Fit 6: didn't check the project, and it doesn't match both.",
+    'Type is the Head, Hands, Heart or Feet answer on the form. Fit 1 to 3 and Fit 5 mean the student picked the project. PP Summary counts each placement, so a Minor student counts once for each week.']
+};
+const startLines = f => f.sheets.get('PP Start here').data.map(r => String(r[0] ?? ''));
+// Everything between the UN goal line and "To move a student".
+function fitBlock(f) {
+  const lines = startLines(f), un = lines.indexOf(UN_LINE), move = lines.indexOf('To move a student');
+  assert.ok(un > 0 && move > un, 'the UN goal line comes before "To move a student"');
+  return lines.slice(un + 1, move);
+}
+const settingTo = (f, key, value) => { f.sheets.get('Settings').data.find(r => r[0] === key)[1] = value; };
+test('PP Start here explains the Fit numbers between the UN goal line and "To move a student", after Sort and after Check again', () => {
+  const { f, run } = practiceRun('Fit legend');
+  const start = () => f.sheets.get('PP Start here'), rowOf = text => startLines(f).indexOf(text) + 1;
+  const check = () => {
+    // A blank line, the heading, the six Fit lines and the closing line, then the blank line before "To move a student".
+    assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.true, '']);
+    // The heading looks like "What's here".
+    const heading = rowOf('What the Fit numbers mean (1 is best)'), here = rowOf("What's here");
+    assert.ok(start().isBold(heading));
+    for (const kind of ['fontSize', 'fontColor', 'valign']) assert.equal(start().formatOf(kind, heading), start().formatOf(kind, here), kind);
+    assert.equal(start().getRange(heading, 1).getBackgrounds()[0][0], start().getRange(here, 1).getBackgrounds()[0][0]);
+    assert.ok(!start().data.flat().some(v => /—/.test(String(v))));
+  };
+  check();
+  moveToMajor(f, run, placedRows(f, run).find(x => x.a.project2)); f.adapter.checkAgain();
+  check();
+  assert.ok(startLines(f).some(l => /^Checked again: /.test(l)));
+});
+
+test('with checkedBeforeInferred FALSE, Fit 4 and Fit 5 swap and the closing line changes; Check again follows the saved run\'s setting', () => {
+  const { f } = practiceRun('Fit legend, checked after inferred', f => settingTo(f, 'checkedBeforeInferred', false));
+  assert.equal(saved(f).settings.checkedBeforeInferred, false);
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.false, '']);
+  f.adapter.checkAgain();
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.false, '']);
+  // Check again reads the setting from the saved run, so changing Settings alone doesn't change the
+  // lines; the Fit numbers on the tabs still come from that run. The next Sort uses the new value.
+  settingTo(f, 'checkedBeforeInferred', true);
+  assert.ok(f.adapter.checkAgain().some(c => c.code === 'stale_inputs'));
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.false, '']);
+  f.adapter.sort('Back to checked first');
+  assert.deepEqual(fitBlock(f), ['', ...FIT_LINES.true, '']);
+});
+
+test('each Fit line describes the case PPEngine.fit gives that number for, with checkedBeforeInferred TRUE and FALSE', () => {
+  // An invented student who checked a, b, c and d, with the Hands type and UN goal 3.
+  const student = { id: 'fit.check@example.org', choices: ['a', 'b', 'c', 'd'], types: ['hands'], goals: ['3'] };
+  const both = "didn't check the project, but it matches both their type and their UN goal.", neither = "didn't check the project, and it doesn't match both.";
+  const cases = [
+    [{ id: 'a', types: ['hands'], goals: ['3'] }, 'checked the project, and it matches their type and their UN goal.'],
+    [{ id: 'b', types: ['hands'], goals: ['4'] }, 'checked the project, and it matches their type.'],
+    [{ id: 'c', types: ['feet'], goals: ['3'] }, 'checked the project, and it matches their UN goal.'],
+    [{ id: 'd', types: ['feet'], goals: ['4'] }, 'checked the project, with no other match.'],
+    [{ id: 'e', types: ['hands'], goals: ['3'] }, both],
+    [{ id: 'f', types: ['hands'], goals: ['4'] }, neither],
+    [{ id: 'g', types: ['feet'], goals: ['3'] }, neither],
+    [{ id: 'h', types: ['feet'], goals: ['4'] }, neither]];
+  for (const checkedFirst of [true, false]) {
+    const { f } = practiceRun('Fit lines', f => settingTo(f, 'checkedBeforeInferred', checkedFirst)), lines = startLines(f), seen = new Set();
+    for (const [project, says] of cases) {
+      const tier = realEngine.fit(student, project, { ...realEngine.defaults, checkedBeforeInferred: checkedFirst }).tier;
+      seen.add(tier);
+      assert.equal(lines.find(l => l.startsWith('Fit ' + tier + ':')), 'Fit ' + tier + ': ' + says, project.id + ', checkedBeforeInferred ' + checkedFirst);
+    }
+    assert.deepEqual([...seen].sort(), [1, 2, 3, 4, 5, 6]);
+  }
+});
+
 // The order Part 7 asks for, worked out from the tabs there were before.
 function expectedOrder(before) {
   const first = ['PP Start here', 'PP Master list', 'PP Projects', 'PP Needs you', 'PP Not placed', 'PP Summary'].filter(n => before.includes(n));
