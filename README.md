@@ -1,8 +1,10 @@
-# Project: Pomfret — Case F
+# Case F: Project: Pomfret sorting
 
-A prototype for two decisions Mr. Litowitz needs to make: **which projects should run**, then **where each student should go**. It counts interest, suggests Majors and Minors, proposes placements, and keeps the reasons and problems visible for review.
+A tool for two decisions Mr. Litowitz needs to make: **which projects should run**, then **where each student should go**. It counts interest, suggests Majors and Minors, proposes placements, and keeps the reasons and problems visible for review.
 
-This is a working prototype, not an approved school roster. The browser demo and repository use invented students. Some rules in the October 26 running document remain unfinished; see [SOURCE-AUDIT.md](SOURCE-AUDIT.md).
+Delivered to Mr. Litowitz in October 2026 as proposed groups. He makes any changes from here. The repository and browser demo still use invented students only.
+
+Team: Christoph Ortenburg, Lucas Shi, Serena Xu, Keke Li, Luke Ryan. Club lead: Cayden Auyang.
 
 ## Setup from a fresh clone
 
@@ -11,8 +13,6 @@ Requirements: Node.js 22 or newer, Git, and Python 3 for one importer regression
 ```sh
 git clone https://github.com/CivicAIClub/case-f-project-pomfret.git
 cd case-f-project-pomfret
-# While this build is under review:
-git switch feature/project-pomfret-sorter
 npm test
 npm run demo
 npm run build:demo
