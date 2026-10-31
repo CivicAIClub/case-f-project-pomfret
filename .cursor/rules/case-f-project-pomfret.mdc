@@ -6,6 +6,8 @@ alwaysApply: true
 
 Client: Mr. Litowitz, Director of Experiential Learning. Luke leads Case F and assigns roles; Cayden leads the club and Keke coordinates club operations. This prototype supports choosing projects, then proposing placements.
 
+Team: Christoph Ortenburg, Lucas Shi, Serena Xu, Keke Li, Luke Ryan. Club lead: Cayden Auyang.
+
 Read README.md for setup, BRIEF.md for client goals and SOURCE-AUDIT.md for differences from the October 26 running-document specification. Local tests do not establish school readiness or acceptance.
 
 Use Node 22+ and built-in modules. Core JavaScript is shared by browser and Apps Script. Edit core/, run npm run bundle and commit generated .gs files and the single-file bundle. Review commands: npm test, npm run demo, npm run build. Python 3 is needed for one helper regression; openpyxl only for authorized private workbook imports.
